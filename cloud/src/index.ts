@@ -66,6 +66,9 @@ export class BotHub extends DurableObject<Env> {
     return this.telegram("sendMessage", { chat_id: this.env.CHAT_ID, text: text.slice(0, 4000), disable_notification: silent,
       ...(rows ? { reply_markup: { inline_keyboard: rows } } : {}) });
   }
+  async notify(text: string) {
+    try { await this.say(text); } catch { /* A notification outage must not stop control or scheduling. */ }
+  }
   async fetch(request: Request): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
@@ -83,7 +86,7 @@ export class BotHub extends DurableObject<Env> {
       await this.arm();
       try {
         if (body.callback_query) {
-          await this.telegram("answerCallbackQuery", { callback_query_id: body.callback_query.id });
+          this.ctx.waitUntil(this.telegram("answerCallbackQuery", { callback_query_id: body.callback_query.id }).catch(() => undefined));
           await this.click(String(body.callback_query.data ?? ""));
         } else if (body.message?.text) await this.text(String(body.message.text));
       } catch (error) {
@@ -112,9 +115,12 @@ export class BotHub extends DurableObject<Env> {
   }
   async connectDevice(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return json({ error: "websocket required" }, 426);
-    const device = this.get<Device>("d:" + request.headers.get("X-Device-ID"));
     const token = request.headers.get("Authorization")?.replace(/^Bearer /, "") ?? "";
-    if (!device || !token || await hash(token) !== device.token_hash) return json({ error: "unauthorized" }, 401);
+    if (!token) return json({ error: "unauthorized" }, 401);
+    const tokenHash = await hash(token);
+    // Read after the await: a concurrent removal/rename must not be overwritten by stale data.
+    const device = this.get<Device>("d:" + request.headers.get("X-Device-ID"));
+    if (!device || tokenHash !== device.token_hash) return json({ error: "unauthorized" }, 401);
     const pair = new WebSocketPair();
     const connection = id();
     for (const old of this.ctx.getWebSockets(device.id)) old.close(4001, "replaced");
@@ -200,6 +206,7 @@ export class BotHub extends DurableObject<Env> {
     if (current === null || current > earliest) await this.ctx.storage.setAlarm(Math.max(Date.now() + 100, earliest));
   }
   async alarm() {
+    try {
     this.ctx.storage.sql.exec("DELETE FROM records WHERE expires IS NOT NULL AND expires < ?", now());
     for (const command of this.list<Command>("cmd:")) {
       if (command.result || command.expires_at >= now()) continue;
@@ -213,7 +220,7 @@ export class BotHub extends DurableObject<Env> {
         this.put("d:" + device.id, device);
         this.socket(device)?.send(JSON.stringify({ type: "reconcile", protocol: 1, desired: "stopped", version: device.version, settings: device.settings }));
       }
-      if (!["stop", "settings", "deadline", "revoke"].includes(command.action)) await this.say(`${device.name}：${command.result.message}`);
+      if (!["stop", "settings", "deadline", "revoke"].includes(command.action)) this.ctx.waitUntil(this.notify(`${device.name}：${command.result.message}`));
     }
     for (const schedule of this.list<Schedule>("schedule:")) {
       if (schedule.due > now()) continue;
@@ -227,18 +234,20 @@ export class BotHub extends DurableObject<Env> {
       try {
         if (schedule.action === "stop") await this.issue(device.id, "stop", { reason: "定时停止" });
         else if (onTime && this.online(device)) await this.issue(device.id, "start", {});
-        else await this.say(`${device.name}：错过定时启动（离线或调度延迟），不补执行。`);
-      } catch (e) { await this.say(`${device.name} 定时操作：${e instanceof Error ? e.message : "失败"}`); }
+        else this.ctx.waitUntil(this.notify(`${device.name}：错过定时启动（离线或调度延迟），不补执行。`));
+      } catch (e) { this.ctx.waitUntil(this.notify(`${device.name} 定时操作：${e instanceof Error ? e.message : "失败"}`)); }
     }
     for (let device of this.list<Device>("d:")) {
       if (!this.online(device) && !device.offline_notified) {
         device.offline_notified = true;
         this.put("d:" + device.id, device);
-        await this.say(`${device.name} 已离线。客户端若仍在运行，将自行按保持期限停止。`);
-        await this.card(device.id, false);
+        this.ctx.waitUntil(this.notify(`${device.name} 已离线。客户端若仍在运行，将自行按保持期限停止。`));
+        this.ctx.waitUntil(this.card(device.id, false).catch(() => undefined));
       }
     }
-    if (this.list<Device>("d:").length || this.list<Schedule>("schedule:").length) await this.arm();
+    } finally {
+      if (this.list<Device>("d:").length || this.list<Schedule>("schedule:").length) await this.arm();
+    }
   }
   async issue(deviceId: string, action: string, payload: any): Promise<Command> {
     const device = this.device(deviceId);

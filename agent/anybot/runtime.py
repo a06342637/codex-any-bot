@@ -22,12 +22,15 @@ class Agent:
         self.config = config
         self.root = root or data_dir()
         self.store = Store(self.root)
+        self.store.bind_device(config["device_id"])
         self.clock = clock
         self.turn_runner = turn_runner
         self.settings = Settings.parse(self.store.get("settings", {"cwd": config.get("cwd", "")}))
         self.version = self.store.get("version", 0)
         self.task = None
         self.events = queue.Queue()
+        self.outbox = queue.Queue(maxsize=128)
+        self.reconnect_requested = threading.Event()
         self.worker = None
         self.cancel = threading.Event()
         self.pool = ThreadPoolExecutor(max_workers=2)
@@ -35,6 +38,7 @@ class Agent:
         self.synced = False
         self.last_connected = 0
         self.ws = None
+        self.active_socket = None
         self.shutdown = threading.Event()
         self.after_exit = None
         self.connection_id = ""
@@ -44,9 +48,28 @@ class Agent:
     def send(self, message):
         if self.connected and self.ws:
             try:
-                self.ws.send(json.dumps({"protocol": 1, **message}))
+                self.outbox.put_nowait((self.active_socket or self.ws, json.dumps({"protocol": 1, **message})))
+            except queue.Full:
+                # ACKs remain in SQLite; reconnect to reconcile rather than block the timer.
+                self.reconnect_requested.set()
+
+    def sender(self):
+        while not self.shutdown.is_set():
+            if self.reconnect_requested.is_set():
+                self.reconnect_requested.clear()
+                if self.ws:
+                    self.ws.close()
+            try:
+                socket, message = self.outbox.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if socket is not self.ws:
+                continue
+            try:
+                socket.send(message)
             except Exception:
-                self.connected = False
+                self.events.put(("transport", (socket, "disconnected", None)))
+                socket.close()
 
     def snapshot(self):
         return {"event": "status", "version": self.version, "boot_id": self.boot_id,
@@ -114,7 +137,7 @@ class Agent:
                     raise ValueError("正在停止上一轮，请稍后再试")
                 settings = Settings.parse({**self.settings.json(), **payload.get("settings", {})})
                 directory = Path(settings.cwd).expanduser()
-                if not settings.cwd or not directory.is_dir():
+                if not settings.cwd or not directory.is_absolute() or not directory.is_dir():
                     raise ValueError("工作目录不存在，请在 TG 设置有效的绝对路径")
                 settings.cwd = str(directory.resolve())
                 find_codex()
@@ -182,7 +205,7 @@ class Agent:
                                                   lambda event: self.events.put(("progress", (run_id, event))))
                     except Exception as exc:
                         logging.warning("Codex execution failed: %s", type(exc).__name__)
-                        result = {"kind": "failed", "thread_id": settings.thread_id}
+                        result = {"kind": "failed" if settings.thread_id else "unknown_session", "thread_id": settings.thread_id}
                     self.events.put(("finished", (run_id, result)))
                 self.worker = threading.Thread(target=execute, daemon=True)
                 self.worker.start()
@@ -191,16 +214,27 @@ class Agent:
             self.publish()
 
     def event(self, kind, value):
-        if kind == "connected":
+        if kind == "transport":
+            socket, action, data = value
+            if action in ("connected", "revoked"):
+                if socket is not self.ws:
+                    return
+                if action == "connected":
+                    self.active_socket = socket
+            elif socket is not self.active_socket:
+                return
+            self.event(action, data)
+        elif kind == "connected":
             self.connected = True
             self.synced = False
             self.last_connected = self.clock()
             self.send({"event": "hello", "boot_id": self.boot_id, "agent_version": __version__})
             self.publish()
         elif kind == "disconnected":
+            if self.connected:
+                self.last_connected = self.clock()
             self.connected = False
             self.synced = False
-            self.last_connected = self.clock()
         elif kind == "revoked":
             self.stop("设备凭据已失效")
             self.after_exit = "revoke"
@@ -249,16 +283,17 @@ class Agent:
 
     def network(self):
         wait = 1
+        websocket.setdefaulttimeout(10)
         context = ssl.create_default_context(cafile=certifi.where())
         context.load_default_certs()
         while not self.shutdown.is_set():
             url = self.config["server"].replace("https://", "wss://", 1) + "/v1/connect"
             self.ws = websocket.WebSocketApp(url, header=["Authorization: Bearer " + self.config["token"],
                                                          "X-Device-ID: " + self.config["device_id"]],
-                on_open=lambda ws: self.events.put(("connected", None)),
-                on_message=lambda ws, msg: self._network_message(msg),
-                on_error=lambda ws, err: self.events.put(("revoked", None)) if getattr(err, "status_code", None) in (401, 403) else None,
-                on_close=lambda *args: self.events.put(("disconnected", None)))
+                on_open=lambda ws: self.events.put(("transport", (ws, "connected", None))),
+                on_message=lambda ws, msg: self._network_message(msg, ws),
+                on_error=lambda ws, err: self.events.put(("transport", (ws, "revoked", None))) if getattr(err, "status_code", None) in (401, 403) else None,
+                on_close=lambda ws, *args: self.events.put(("transport", (ws, "disconnected", None))))
             try:
                 self.ws.run_forever(ping_interval=20, ping_timeout=10, sslopt={"context": context})
             except Exception:
@@ -267,15 +302,17 @@ class Agent:
                 break
             wait = min(wait * 2, 30)
 
-    def _network_message(self, msg):
+    def _network_message(self, msg, socket):
         try:
             value = json.loads(msg)
             if isinstance(value, dict):
-                self.events.put(("message", value))
+                self.events.put(("transport", (socket, "message", value)))
         except ValueError:
             pass
 
     def run(self):
+        sender = threading.Thread(target=self.sender, daemon=True)
+        sender.start()
         network = threading.Thread(target=self.network, daemon=True)
         network.start()
         try:

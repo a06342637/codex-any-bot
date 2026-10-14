@@ -44,6 +44,14 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO records VALUES (?,?)", (key, json.dumps(value)))
         self.db.commit()
 
+    def bind_device(self, device_id: str, *, reset: bool = False) -> None:
+        previous = self.get("device_id")
+        if reset or (previous is not None and previous != device_id):
+            with self.db:
+                self.db.execute("DELETE FROM commands")
+                self.db.execute("DELETE FROM records")
+        self.put("device_id", device_id)
+
     def claim(self, command_id: str) -> dict | None:
         row = self.db.execute("SELECT result FROM commands WHERE id=?", (command_id,)).fetchone()
         if row:

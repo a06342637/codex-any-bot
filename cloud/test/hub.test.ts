@@ -34,6 +34,29 @@ describe("real SQLite-backed Durable Object", () => {
     await webhook({ update_id: 1, message: { from: { id: 999 }, chat: { id: 42 }, text: "/start" } });
     expect(calls).toHaveLength(0);
   });
+  it("executes stop even when Telegram callback acknowledgement has expired", async () => {
+    await seed();
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: any, init: any) => {
+      if (String(url).endsWith("/answerCallbackQuery")) return Response.json({ ok: false, error_code: 400, description: "query is too old" });
+      return realFetch(url, init);
+    }));
+    await webhook({ update_id: 99, callback_query: { id: "expired", from: { id: 42 }, message: { chat: { id: 42 } }, data: "stop:machine1" } });
+    await runInDurableObject(hub(), (instance: BotHub) => {
+      expect(instance.list<any>("cmd:machine1:").some(c => c.action === "stop")).toBe(true);
+    });
+  });
+  it("notification failure cannot prevent the next scheduled stop", async () => {
+    await seed("a"); await seed("b");
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("Telegram temporarily unavailable"); }));
+    await runInDurableObject(hub(), async (instance: BotHub, state) => {
+      instance.put("schedule:a", { id: "a", device_id: "a", action: "start", kind: "once", due: now() - 2 });
+      instance.put("schedule:b", { id: "b", device_id: "b", action: "stop", kind: "once", due: now() - 1 });
+      await instance.alarm();
+      expect(instance.list<any>("cmd:b:").some(c => c.action === "stop")).toBe(true);
+      expect(await state.storage.getAlarm()).not.toBeNull();
+    });
+  });
   it("deduplicates Telegram updates", async () => {
     const update = { update_id: 2, message: { from: { id: 42 }, chat: { id: 42 }, text: "/start" } };
     await webhook(update); await webhook(update);
@@ -113,6 +136,23 @@ describe("real SQLite-backed Durable Object", () => {
     await seed();
     const result = await SELF.fetch("https://relay.example.com/v1/connect", { headers: { Upgrade: "websocket", "X-Device-ID": "machine1", Authorization: "Bearer wrong" } });
     expect(result.status).toBe(401);
+  });
+  it("cannot resurrect a device removed while connection authentication is pending", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const digest = crypto.subtle.digest.bind(crypto.subtle);
+      // Perform the removal at the authentication await boundary, within this actor's I/O context.
+      const spy = vi.spyOn(crypto.subtle, "digest").mockImplementation(async (...args) => {
+        const result = await digest(...args);
+        instance.del("d:machine1");
+        return result;
+      });
+      try {
+        const response = await instance.connectDevice(new Request("https://relay.example.com/v1/connect", { headers: { Upgrade: "websocket", "X-Device-ID": "machine1", Authorization: "Bearer secret-machine1" } }));
+        expect(response.status).toBe(401);
+        expect(instance.get("d:machine1")).toBeUndefined();
+      } finally { spy.mockRestore(); }
+    });
   });
   it("keeps settings and stop intent after the Durable Object is evicted", async () => {
     await seed();

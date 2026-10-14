@@ -6,6 +6,8 @@ Python 测试覆盖独立分钟设置、首次成功起算、不重复续期、�
 
 Cloudflare 测试在本地 workerd 中运行真实 SQLite Durable Object 与 WebSocket，验证授权、配对码并发一次性消费、Telegram 去重、指定机器路由、参数隔离、离线停止意图、定时错过不补发。
 
+回归测试还覆盖连续重连失败的离线期限、网络发送阻塞时的本地到期、旧连接迟到事件、重新绑定的状态隔离、TG 回执/通知失败及认证期间设备被移除。
+
 ```sh
 python -m pytest -q
 cd cloud

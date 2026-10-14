@@ -47,6 +47,7 @@
 
 ## 文档
 
+- [版本更新与升级说明](CHANGELOG.md)
 - [Cloudflare 与 Telegram 部署](docs/DEPLOY.md)
 - [Windows 安装、更新、卸载](docs/WINDOWS.md)
 - [macOS 安装、更新、卸载](docs/MACOS.md)

@@ -11,6 +11,8 @@ import threading
 import time
 from pathlib import Path
 
+from . import __version__
+
 
 def find_codex() -> str:
     candidates = [os.environ.get("ANYBOT_CODEX")]
@@ -218,7 +220,7 @@ def rpc(method: str, params: dict, binary: str | None = None) -> dict:
         raise TimeoutError("Codex 会话接口超时")
 
     try:
-        request(1, "initialize", {"clientInfo": {"name": "codex-any-bot", "version": "0.1.0"}})
+        request(1, "initialize", {"clientInfo": {"name": "codex-any-bot", "version": __version__}})
         send({"method": "initialized", "params": {}})
         return request(2, method, params)
     finally:

@@ -22,7 +22,7 @@ import certifi
 from . import __version__
 from .codex import diagnose
 from .runtime import Agent
-from .storage import data_dir, load_config, save_config
+from .storage import Store, data_dir, load_config, save_config
 
 RELEASES = "https://github.com/a06342637/codex-any-bot/releases"
 
@@ -147,6 +147,11 @@ def main(argv=None):
                 }))
             except urllib.error.HTTPError as exc:
                 raise RuntimeError("配对失败：检查配对码是否过期，以及托管服务配置") from exc
+            store = Store(root)
+            try:
+                store.bind_device(result["device_id"], reset=True)
+            finally:
+                store.close()
             save_config({**result, "server": args.server.rstrip("/"), "cwd": str(Path(args.cwd).resolve())})
             print("Bound successfully / 绑定成功，客户端将上线待命。")
         elif args.command == "stop-local":
@@ -163,7 +168,6 @@ def main(argv=None):
         elif args.command == "diagnose":
             print(json.dumps(diagnose(), ensure_ascii=False, indent=2))
         elif args.command == "status":
-            from .storage import Store
             store = Store(root)
             print(json.dumps(store.get("last_state", {"status": "尚未运行"}), ensure_ascii=False, indent=2))
             store.close()

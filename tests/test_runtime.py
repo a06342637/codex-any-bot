@@ -153,3 +153,64 @@ def test_schedule_deadline_can_change_during_a_task(agent):
     agent.current[0] = 1040
     agent.tick()
     assert agent.task.phase == "stopped"
+
+
+def test_failed_reconnect_attempts_do_not_extend_offline_grace(agent):
+    agent.task = Task("job", 1, Settings(cwd=str(agent.root)), phase="holding")
+    agent.event("disconnected", None)
+    agent.current[0] = 1030
+    agent.event("disconnected", None)  # failed TCP attempt, not a new successful connection
+    agent.current[0] = 1065
+    agent.event("disconnected", None)
+    agent.tick()
+    assert agent.last_connected == 1000
+    assert agent.worker is None
+
+
+def test_network_send_does_not_block_the_task_loop(agent):
+    class UnavailableSocket:
+        def send(self, message):
+            raise AssertionError("Task loop must enqueue, not perform socket I/O")
+    agent.ws = UnavailableSocket()
+    agent.send({"event": "status"})
+    assert agent.connected
+
+
+def test_relative_workspace_is_rejected(agent, monkeypatch):
+    monkeypatch.chdir(agent.root)
+    agent.command(command(agent, "start", {"settings": {"cwd": "."}}))
+    assert agent.task is None
+
+
+def test_late_close_from_old_connection_cannot_disconnect_new_one(agent):
+    old, new = object(), object()
+    agent.active_socket = old
+    agent.ws = new
+    agent.event("transport", (new, "connected", None))
+    agent.event("transport", (old, "disconnected", None))
+    assert agent.connected and agent.active_socket is new
+
+
+def test_expiry_is_processed_while_sender_is_blocked(agent):
+    import threading
+    entered, release = threading.Event(), threading.Event()
+    class SlowSocket:
+        def send(self, message):
+            entered.set()
+            release.wait(5)
+        def close(self):
+            release.set()
+    agent.ws = SlowSocket()
+    sender = threading.Thread(target=agent.sender, daemon=True)
+    sender.start()
+    try:
+        agent.send({"event": "status"})
+        assert entered.wait(2)
+        agent.task = Task("job", 1, Settings(hold_minutes=1), first_success_at=1000, phase="holding")
+        agent.current[0] = 1065
+        agent.tick()
+        assert agent.task.phase == "stopped" and agent.cancel.is_set()
+    finally:
+        agent.shutdown.set()
+        release.set()
+        sender.join(2)

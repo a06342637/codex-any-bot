@@ -1,4 +1,4 @@
-param([string]$Server, [string]$Code, [switch]$Update, [string]$Version = 'v0.1.0')
+param([string]$Server, [string]$Code, [switch]$Update, [string]$Version = 'v0.1.1')
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $root = Join-Path $env:LOCALAPPDATA 'codex-any-bot'
