@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-any-bot"
+version = "0.1.0"
+description = "One Telegram bot, independent Codex agents on Windows and macOS"
+requires-python = ">=3.11"
+dependencies = ["websocket-client==1.9.0", "certifi==2026.7.22"]
+
+[project.optional-dependencies]
+test = ["pytest==8.4.2"]
+build = ["pyinstaller==6.22.3"]
+
+[project.scripts]
+codex-any-bot = "anybot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["agent"]

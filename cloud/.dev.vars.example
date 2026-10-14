@@ -1,0 +1,4 @@
+BOT_TOKEN=replace-locally
+ALLOWED_USER_ID=123456789
+CHAT_ID=123456789
+WEBHOOK_SECRET=replace-with-random-secret

@@ -1,0 +1,17 @@
+.local/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+node_modules/
+.wrangler/
+dist/
+build/
+*.spec
+.env*
+.dev.vars*
+!.dev.vars.example
+coverage/
+*.log
+.DS_Store
