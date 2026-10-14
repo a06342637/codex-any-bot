@@ -84,9 +84,15 @@ def maintenance(action):
         path = Path(tempfile.mkdtemp(prefix="anybot-update-")) / name
         path.write_bytes(script)
         if sys.platform == "win32":
-            detached(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path), "-Update"])
+            args = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path), "-Update"]
+            options = {"creationflags": subprocess.CREATE_NO_WINDOW}
         else:
-            detached(["bash", str(path), "--update"])
+            args = ["bash", str(path), "--update"]
+            options = {"start_new_session": True}
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=600, **options)
+        if result.returncode:
+            raise RuntimeError("Update installer failed; retained previous client")
     elif action == "revoke":
         root = data_dir()
         config = load_config()
@@ -174,6 +180,7 @@ def main(argv=None):
                     maintenance(action)
                 except Exception:
                     logging.error("Maintenance failed; restarting existing version")
+                    (root / "stop.request").unlink(missing_ok=True)
                     maintenance("restart")
                     return 1
         return 0

@@ -16,7 +16,19 @@ repo='https://github.com/a06342637/codex-any-bot/releases'
 if [ "$update" = 0 ] && [ -f "$root/config.json" ]; then echo 'Already installed; use --update.' >&2; exit 1; fi
 if [ "$update" = 0 ] && { [ -z "$server" ] || [ -z "$code" ]; }; then echo 'Server and Code are required.' >&2; exit 1; fi
 stage=$(mktemp -d)
-trap 'rm -rf "$stage"' EXIT
+rollback=''
+if [ "$update" = 1 ] && [ -f "$root/current.json" ]; then
+  rollback=$(/usr/bin/plutil -extract executable raw -o - "$root/current.json")
+fi
+finish() {
+  result=$?
+  if [ "$result" != 0 ] && [ -n "$rollback" ] && [ -x "$rollback" ]; then
+    rm -f "$root/stop.request"
+    nohup "$rollback" run </dev/null >>"$root/update-error.log" 2>&1 &
+  fi
+  rm -rf "$stage"
+}
+trap finish EXIT
 if [ "$update" = 1 ]; then
   curl -fLsS "$repo/latest/download/manifest.json" -o "$stage/latest.json"
   version=$(/usr/bin/plutil -extract version raw -o - "$stage/latest.json")
