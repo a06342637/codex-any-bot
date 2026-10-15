@@ -55,4 +55,23 @@ jobs:
       - name: Publish immutable version assets
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release download "$GITHUB_REF_NAME" --dir verify-existing
+            python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path('verify-existing')
+          manifest = json.loads((root / 'manifest.json').read_text())
+          assert manifest['version'] == os.environ['GITHUB_REF_NAME']
+          expected = {p.name for p in Path('release').iterdir() if p.is_file() and p.name != 'manifest.json'}
+          assert set(manifest['files']) == expected, 'Published release is incomplete'
+          for name, meta in manifest['files'].items():
+              data = (root / name).read_bytes()
+              assert len(data) == meta['size'], name
+              assert hashlib.sha256(data).hexdigest() == meta['sha256'], name
+          print('Existing release verified; preserving immutable published assets.')
+          PY
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --title "$GITHUB_REF_NAME" --generate-notes
+          fi
