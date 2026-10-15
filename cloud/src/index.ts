@@ -13,6 +13,8 @@ export interface Env {
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const button = (text: string, data: string) => ({ text, callback_data: data });
 type Rows = ReturnType<typeof button>[][];
+type Panel = { message_id: number; view: string; device_id?: string; signature: string };
+const legacyBatchActions = new Set(["batch", "toggle", "batchstart", "batchstop", "batchhold", "batchinterval", "stopall"]);
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -26,6 +28,7 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 export class BotHub extends DurableObject<Env> {
+  private panelQueue?: Promise<void>;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, value TEXT NOT NULL, expires REAL)");
@@ -88,6 +91,10 @@ export class BotHub extends DurableObject<Env> {
       try {
         if (body.callback_query) {
           this.ctx.waitUntil(this.telegram("answerCallbackQuery", { callback_query_id: body.callback_query.id }).catch(() => undefined));
+          if (legacyBatchActions.has(String(body.callback_query.data ?? "").split(":")[0]) && Number.isSafeInteger(body.callback_query.message?.message_id)) {
+            this.ctx.waitUntil(this.telegram("editMessageReplyMarkup", { chat_id: this.env.CHAT_ID, message_id: body.callback_query.message.message_id,
+              reply_markup: { inline_keyboard: [[button("机器管理", "home")]] } }).catch(() => undefined));
+          }
           await this.click(String(body.callback_query.data ?? ""));
         } else if (body.message?.text) await this.text(String(body.message.text));
       } catch (error) {
@@ -135,8 +142,7 @@ export class BotHub extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets(deviceId)) ws.close(4003, "revoked");
     for (const key of ["d:", "dirs:", "stopat:"]) this.del(key + deviceId);
     this.ctx.storage.sql.exec("DELETE FROM records WHERE json_extract(value, '$.device_id')=?", deviceId);
-    const batch = this.get<string[]>("batch");
-    if (batch) this.put("batch", batch.filter(value => value !== deviceId));
+    this.del("batch");
     const input = this.get<any>("input");
     if (input?.ids?.includes(deviceId)) {
       input.ids = input.ids.filter((value: string) => value !== deviceId);
@@ -144,6 +150,7 @@ export class BotHub extends DurableObject<Env> {
       else this.del("input");
     }
     if (device?.card_id) this.ctx.waitUntil(this.telegram("deleteMessage", { chat_id: this.env.CHAT_ID, message_id: device.card_id }).catch(() => undefined));
+    if (this.get<Panel>("panel")?.device_id === deviceId) await this.home();
   }
   async connectDevice(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return json({ error: "websocket required" }, 426);
@@ -306,15 +313,36 @@ export class BotHub extends DurableObject<Env> {
     await this.arm();
     return command;
   }
-  async home() {
+  async renderPanel(view: string, deviceId: string | undefined, text: string, rows: Rows, background = false, fresh = false) {
+    const work = (this.panelQueue ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      const previous = fresh ? undefined : this.get<Panel>("panel");
+      // A status from another machine must never replace the panel being used.
+      if (background && (previous?.view !== "device" || previous.device_id !== deviceId)) return;
+      const signature = JSON.stringify([text, rows]);
+      if (previous?.signature === signature && previous.view === view && previous.device_id === deviceId) return;
+      let messageId = previous?.message_id;
+      if (messageId) {
+        try {
+          await this.telegram("editMessageText", { chat_id: this.env.CHAT_ID, message_id: messageId, text, reply_markup: { inline_keyboard: rows } });
+        } catch { messageId = undefined; }
+      }
+      if (!messageId) messageId = (await this.say(text, rows, true)).message_id;
+      this.put("panel", { message_id: messageId, view, device_id: deviceId, signature });
+    });
+    this.panelQueue = work;
+    try { await work; }
+    finally { if (this.panelQueue === work) this.panelQueue = undefined; }
+  }
+  async home(fresh = false) {
+    this.del("input");
+    this.del("batch");
     const devices = this.list<Device>("d:");
     const rows: Rows = devices.map(d => [button(`${this.online(d) ? "🟢" : "⚫"} ${d.name} · ${d.desired === "running" ? "运行中" : "待命"}`, "d:" + d.id)]);
-    rows.push([button("添加机器", "add"), button("刷新", "home")], [button("批量操作", "batch"), button("全部停止", "stopall")]);
-    await this.say(`我的机器 · ${devices.filter(d => this.online(d)).length}/${devices.length} 台在线`, rows, true);
+    rows.push([button("添加机器", "add"), button("刷新机器", "home")]);
+    await this.renderPanel("machines", undefined, `机器管理 · ${devices.filter(d => this.online(d)).length}/${devices.length} 台在线\n点击机器名称，控制这台机器。`, rows, false, fresh);
   }
   async card(deviceId: string, create = true) {
     const device = this.device(deviceId);
-    if (!create && !device.card_id) return;
     const task = device.state?.task;
     const phase: Record<string, string> = { waiting: "等待开始", running: "执行中", holding: "保持中", retrying: "等待重试", stopping: "正在停止", stopped: "已停止", paused: "异常暂停" };
     const active = task && !["stopped", "paused"].includes(task.phase);
@@ -322,32 +350,18 @@ export class BotHub extends DurableObject<Env> {
     const rows: Rows = [
       [button("开始", "start:" + deviceId), button("立即停止", "stop:" + deviceId)],
       [button("选择会话", "sessions:" + deviceId), button("新建并开始", "new:" + deviceId)],
-      [button("保持时长", "hold:" + deviceId), button("发送间隔", "interval:" + deviceId)],
+      [button(`保持：${device.settings.hold_minutes === null ? "不限时" : device.settings.hold_minutes + " 分钟"}`, "hold:" + deviceId), button(`间隔：${device.settings.interval_minutes} 分钟`, "interval:" + deviceId)],
       [button("发送内容", "prompt:" + deviceId), button("工作目录", "cwd:" + deviceId)],
-      [button("定时任务", "schedule:" + deviceId), button("机器设置", "manage:" + deviceId)],
-      [button("刷新", "d:" + deviceId), button("机器列表", "home")],
+      [button("重命名", "rename:" + deviceId), button("更新程序", "update:" + deviceId)],
+      [button("定时任务", "schedule:" + deviceId), button("更多设置", "manage:" + deviceId)],
+      [button("刷新状态", "d:" + deviceId), button("机器管理 / 切换", "home")],
     ];
-    if (device.card_id) {
-      if (!create && device.card_text === text) return;
-      try {
-        await this.telegram("editMessageText", { chat_id: this.env.CHAT_ID, message_id: device.card_id, text, reply_markup: { inline_keyboard: rows } });
-      } catch {
-        if (!create) return;
-        const result = await this.say(text, rows, true);
-        device.card_id = result.message_id;
-      }
-    } else {
-      const result = await this.say(text, rows, true);
-      device.card_id = result.message_id;
-    }
-    // Re-read after network I/O so a concurrent status cannot be overwritten.
-    const fresh = this.device(deviceId);
-    fresh.card_id = device.card_id; fresh.card_text = text;
-    this.put("d:" + deviceId, fresh);
+    await this.renderPanel("device", deviceId, text, rows, !create);
   }
   async ask(type: string, ids: string[], prompt: string, extra = {}) {
-    this.put("input", { type, ids, ...extra, expires: now() + 600 }, now() + 600);
-    await this.say(prompt + "\n输入 /cancel 取消。", undefined, true);
+    if (ids.length !== 1) throw new Error("请先选择一台机器");
+    this.put("input", { type, ids, ...extra, scope: "device", expires: now() + 600 }, now() + 600);
+    await this.renderPanel("input", ids[0], this.device(ids[0]).name + "\n" + prompt + "\n输入 /cancel 取消。", [[button("返回机器", "d:" + ids[0]), button("切换机器", "home")]]);
   }
   async sessionList(device: Device, sessions: any[], cursor: string | null) {
     const rows: Rows = [];
@@ -364,16 +378,10 @@ export class BotHub extends DurableObject<Env> {
     rows.push([button("新建并开始", "new:" + device.id), button("返回", "d:" + device.id)]);
     await this.say(`${device.name} 的会话（选择后查看详情，再点开始）`, rows, true);
   }
-  async batch() {
-    const selected = this.get<string[]>("batch") || [];
-    const rows: Rows = this.list<Device>("d:").map(d => [button(`${selected.includes(d.id) ? "☑" : "☐"} ${d.name}`, "toggle:" + d.id)]);
-    rows.push([button("启动选中", "batchstart"), button("停止选中", "batchstop")],
-      [button("统一保持分钟", "batchhold"), button("统一间隔分钟", "batchinterval")], [button("返回", "home")]);
-    await this.say("选择机器；批量启动使用每台各自保存的会话和参数。", rows, true);
-  }
   async click(data: string) {
     const [action, deviceId, arg] = data.split(":");
-    if (action === "home") return this.home();
+    this.del("input");
+    if (action === "home" || legacyBatchActions.has(action)) return this.home();
     if (action === "add") {
       const release = `https://github.com/a06342637/codex-any-bot/releases/download/${this.env.RELEASE_TAG}`;
       const server = this.env.PUBLIC_BASE_URL.replace(/\/$/, "");
@@ -382,27 +390,6 @@ export class BotHub extends DurableObject<Env> {
       const mac = `(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS '${release}/install.sh' -o "$p" && bash "$p" --server '${server}')`;
       await this.say("在要接入的电脑运行后，输入本机器人的 Bot Token 和你的数字用户 ID。CF 地址已填好；Token 只作绑定校验，不保存在电脑。此命令可用于多台电脑。\n\nWindows（请在 CMD 执行）：\n" + win);
       return this.say("Mac 终端：\n" + mac);
-    }
-    if (action === "batch") return this.batch();
-    if (action === "toggle") {
-      this.device(deviceId);
-      const ids = this.get<string[]>("batch") || [];
-      this.put("batch", ids.includes(deviceId) ? ids.filter(x => x !== deviceId) : [...ids, deviceId]);
-      return this.batch();
-    }
-    if (["batchstart", "batchstop", "stopall"].includes(action)) {
-      const ids = action === "stopall" ? this.list<Device>("d:").map(d => d.id) : this.get<string[]>("batch") || [];
-      const results: string[] = [];
-      for (const did of ids) {
-        try { await this.issue(did, action === "batchstart" ? "start" : "stop", {}); results.push(`${this.device(did).name}：指令已发送${this.online(this.device(did)) ? "" : "，上线后同步停止"}`); }
-        catch (e) { results.push(`${this.get<Device>("d:" + did)?.name || did}：${e instanceof Error ? e.message : "失败"}`); }
-      }
-      return this.say(results.join("\n") || "请先选择机器");
-    }
-    if (["batchhold", "batchinterval"].includes(action)) {
-      const ids = this.get<string[]>("batch") || [];
-      if (!ids.length) throw new Error("请先选择机器");
-      return this.ask(action === "batchhold" ? "hold" : "interval", ids, "请输入整数分钟" + (action === "batchhold" ? "；不限时请输入 不限时" : ""));
     }
     if (action === "select") {
       const session = this.get<any>("session:" + deviceId);
@@ -425,7 +412,7 @@ export class BotHub extends DurableObject<Env> {
       return this.say("定时任务已取消");
     }
     const device = this.device(deviceId);
-    if (action === "d") return this.card(deviceId);
+    if (action === "d") { this.del("input"); return this.card(deviceId); }
     if (action === "start" || action === "stop") {
       await this.issue(deviceId, action, {});
       await this.say(`${device.name}：${action === "start" ? "启动指令已发送" : "停止指令已发送，等待客户端确认"}`, undefined, true);
@@ -433,12 +420,12 @@ export class BotHub extends DurableObject<Env> {
     }
     if (["sessions", "diagnose", "restart", "update"].includes(action)) {
       await this.issue(deviceId, action, {});
-      return this.say(`${device.name}：${{ sessions: "正在读取会话", diagnose: "正在诊断", restart: "正在重启客户端", update: "正在更新客户端" }[action]}`, undefined, true);
+      return this.say(`${device.name}：${{ sessions: "正在读取会话", diagnose: "正在诊断", restart: "正在重启客户端", update: "正在更新程序" }[action]}`, undefined, true);
     }
     if (action === "new") {
       if (device.desired === "running") throw new Error("请先停止当前任务");
       const dirs = this.get<string[]>("dirs:" + deviceId) || [];
-      this.put("input", { type: "new", ids: [deviceId], expires: now() + 600 }, now() + 600);
+      this.put("input", { type: "new", scope: "device", ids: [deviceId], expires: now() + 600 }, now() + 600);
       return this.say(`新会话目录：输入本机绝对路径，或选择常用目录。\n当前目录：${device.settings.cwd || "未设置"}\n/cancel 取消`, [
         ...(device.settings.cwd ? [[button("使用当前目录并开始", "newhere:" + deviceId)]] : []),
         ...dirs.map((dir, i) => [button(dir.slice(-40), `newdir:${deviceId}:${i}`)]),
@@ -453,10 +440,12 @@ export class BotHub extends DurableObject<Env> {
     }
     if (action === "hold" || action === "interval") {
       const values = action === "hold" ? [10, 30, 60, 120] : [1, 2, 5, 10];
-      const rows = values.map(value => [button(`${value} 分钟`, `set${action}:${deviceId}:${value}`)]);
-      if (action === "hold") rows.push([button("不限时", `sethold:${deviceId}:none`)]);
+      const current = action === "hold" ? device.settings.hold_minutes : device.settings.interval_minutes;
+      const rows = values.map(value => [button(`${current === value ? "✓ " : ""}${value} 分钟`, `set${action}:${deviceId}:${value}`)]);
+      if (action === "hold") rows.push([button(`${current === null ? "✓ " : ""}不限时`, `sethold:${deviceId}:none`)]);
       rows.push([button("自定义分钟", `custom${action}:${deviceId}`)]);
-      return this.say(`${device.name} · ${action === "hold" ? "保持时长（从首次成功开始）" : "发送间隔（上一轮结束后）"}`, rows, true);
+      rows.push([button("返回机器", "d:" + deviceId), button("切换机器", "home")]);
+      return this.renderPanel(action, deviceId, `${device.name} · ${action === "hold" ? "保持时长（从首次成功开始）" : "发送间隔（上一轮结束后）"}\n当前：${current === null ? "不限时" : current + " 分钟"}`, rows);
     }
     if (action === "sethold" || action === "setinterval") {
       await this.issue(deviceId, "settings", { [action === "sethold" ? "hold_minutes" : "interval_minutes"]: arg === "none" ? null : Number(arg) });
@@ -468,11 +457,12 @@ export class BotHub extends DurableObject<Env> {
       if (type === "cwd" && device.desired === "running") throw new Error("修改目录前请先停止当前任务");
       return this.ask(type, [deviceId], prompts[type]);
     }
-    if (action === "manage") return this.say(device.name + " · 机器设置", [
-      [button("重命名", "rename:" + deviceId), button("诊断", "diagnose:" + deviceId)],
-      [button("重启客户端", "restart:" + deviceId), button("更新客户端", "update:" + deviceId)],
-      [button("移除绑定", "remove:" + deviceId), button("返回", "d:" + deviceId)],
-    ], true);
+    if (action === "manage") return this.renderPanel("manage", deviceId, device.name + " · 更多设置", [
+      [button("重命名", "rename:" + deviceId), button("更新程序", "update:" + deviceId)],
+      [button("诊断", "diagnose:" + deviceId), button("重启客户端", "restart:" + deviceId)],
+      [button("移除绑定", "remove:" + deviceId), button("返回机器", "d:" + deviceId)],
+      [button("机器管理 / 切换", "home")],
+    ]);
     if (action === "remove") return this.say(`移除 ${device.name} 后凭据失效；若在线将停止客户端，离线时无法立即中断已在执行的一轮。`, [[button("确认移除", "confirmremove:" + deviceId), button("取消", "d:" + deviceId)]]);
     if (action === "confirmremove") {
       await this.issue(deviceId, "revoke", {});
@@ -496,11 +486,16 @@ export class BotHub extends DurableObject<Env> {
   }
   async text(input: string) {
     input = input.trim();
-    if (["/start", "/machines", "/menu"].includes(input.split("@")[0])) { this.del("input"); return this.home(); }
-    if (input === "/cancel") { this.del("input"); return this.say("已取消", undefined, true); }
-    if (input === "/stopall") return this.click("stopall");
+    if (["/start", "/machines", "/menu"].includes(input.split("@")[0])) return this.home(true);
+    if (input === "/cancel") {
+      const deviceId = this.get<Panel>("panel")?.device_id;
+      this.del("input");
+      return deviceId && this.get("d:" + deviceId) ? this.card(deviceId) : this.home();
+    }
+    if (input === "/stopall") return this.home();
     const context = this.get<any>("input");
     if (!context || context.expires < now()) return this.say("使用 /start 打开机器面板。", undefined, true);
+    if (context.scope !== "device" || !Array.isArray(context.ids) || context.ids.length !== 1) return this.home();
     if (context.type === "hold") settings({ hold_minutes: input === "不限时" ? null : Number(input) });
     if (context.type === "interval") settings({ interval_minutes: Number(input) });
     const results = [];

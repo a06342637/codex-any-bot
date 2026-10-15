@@ -63,7 +63,7 @@ describe("real SQLite-backed Durable Object", () => {
     await runInDurableObject(hub(), (instance: BotHub) => {
       for (const key of ["d:a", "dirs:a", "stopat:a", "schedule:s", "session:s", "cmd:a:c"]) expect(instance.get(key)).toBeUndefined();
       expect(instance.device("b").id).toBe("b");
-      expect(instance.get("batch")).toEqual(["b"]);
+      expect(instance.get("batch")).toBeUndefined();
       expect(instance.get<any>("input").ids).toEqual(["b"]);
     });
   });
@@ -129,15 +129,153 @@ describe("real SQLite-backed Durable Object", () => {
       expect(instance.device("machine1").settings.hold_minutes).toBeNull();
     });
   });
-  it("reports each selected machine even if one was removed during a batch edit", async () => {
+  it("discards legacy batch input without changing any machine", async () => {
     await seed("a"); await seed("b");
     await runInDurableObject(hub(), async (instance: BotHub) => {
       instance.put("input", { type: "hold", ids: ["a", "removed", "b"], expires: now() + 600 });
       await instance.text("30");
-      expect(instance.device("a").settings.hold_minutes).toBe(30);
-      expect(instance.device("b").settings.hold_minutes).toBe(30);
+      expect(instance.device("a").settings.hold_minutes).toBeNull();
+      expect(instance.device("b").settings.hold_minutes).toBeNull();
+      expect(instance.get("input")).toBeUndefined();
     });
-    expect(calls.some(c => c.body.text?.includes("removed："))).toBe(true);
+    expect(calls.some(c => c.body.text?.includes("机器管理"))).toBe(true);
+  });
+  it("switches machines in one panel with direct rename and update actions", async () => {
+    await seed("a"); await seed("b");
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.home();
+      await instance.click("d:a");
+      await instance.click("d:b");
+      expect(instance.list("cmd:")).toHaveLength(0);
+    });
+    expect(calls.filter(c => c.url.endsWith("/sendMessage"))).toHaveLength(1);
+    const edits = calls.filter(c => c.url.endsWith("/editMessageText"));
+    expect(edits).toHaveLength(2);
+    expect(new Set(edits.map(c => c.body.message_id)).size).toBe(1);
+    const buttons = edits.at(-1).body.reply_markup.inline_keyboard.flat();
+    expect(buttons).toContainEqual({ text: "重命名", callback_data: "rename:b" });
+    expect(buttons).toContainEqual({ text: "更新程序", callback_data: "update:b" });
+    expect(buttons.some((b: any) => b.callback_data.endsWith(":a"))).toBe(false);
+    expect(JSON.stringify(calls)).not.toMatch(/批量操作|全部停止|统一保持/);
+  });
+  it("shows quick and custom minute changes on buttons and restores them after eviction", async () => {
+    await seed("a"); await seed("b");
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.click("d:a");
+      await instance.click("sethold:a:30");
+      await instance.click("hold:a");
+    });
+    expect(calls.at(-1).body.reply_markup.inline_keyboard.flat()).toContainEqual({ text: "✓ 30 分钟", callback_data: "sethold:a:30" });
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.click("custominterval:a");
+      await instance.text("3");
+      expect(instance.device("b").settings).toEqual({ ...defaults, cwd: "C:\\work" });
+    });
+    await evictDurableObject(hub());
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.home();
+      await instance.click("d:a");
+    });
+    const buttons = calls.at(-1).body.reply_markup.inline_keyboard.flat();
+    expect(buttons).toContainEqual({ text: "保持：30 分钟", callback_data: "hold:a" });
+    expect(buttons).toContainEqual({ text: "间隔：3 分钟", callback_data: "interval:a" });
+  }, 20000); // Includes forced Durable Object eviction and rehydration.
+  it("renames just one machine and cancels stale input when switching", async () => {
+    await seed("a"); await seed("b");
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const token = instance.device("a").token_hash;
+      await instance.click("rename:a");
+      await instance.text("家里 Windows");
+      await instance.home();
+      expect(instance.device("a").name).toBe("家里 Windows");
+      expect(instance.device("a").token_hash).toBe(token);
+      expect(instance.device("b").name).toBe("b");
+      await instance.click("rename:a");
+      await instance.click("d:b");
+      await instance.text("should-not-rename");
+      expect(instance.device("a").name).toBe("家里 Windows");
+      expect(instance.device("b").name).toBe("b");
+    });
+    expect(calls.some(c => c.body.reply_markup?.inline_keyboard.flat().some((b: any) => b.text.includes("家里 Windows")))).toBe(true);
+  });
+  it("retires all old batch buttons without issuing machine commands", async () => {
+    await seed("a"); await seed("b");
+    for (const [index, data] of ["batch", "toggle:a", "batchstart", "batchstop", "batchhold", "batchinterval", "stopall"].entries()) {
+      await webhook({ update_id: 1000 + index, callback_query: { id: "legacy", from: { id: 42 }, message: { message_id: 999, chat: { id: 42 } }, data } });
+    }
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.text("/stopall");
+      expect(instance.list("cmd:")).toHaveLength(0);
+      expect(instance.get("batch")).toBeUndefined();
+    });
+    expect(calls.some(c => c.url.endsWith("/editMessageReplyMarkup") && c.body.reply_markup.inline_keyboard[0][0].text === "机器管理")).toBe(true);
+  });
+  it("keeps other machines and status heartbeats from taking over navigation", async () => {
+    await seed("a"); await seed("b");
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.click("d:b");
+      await instance.card("a", false);
+      await instance.click("hold:b");
+      await instance.card("b", false);
+      expect(instance.get<any>("panel").view).toBe("hold");
+      await instance.home();
+      await instance.card("a", false);
+      expect(instance.get<any>("panel").view).toBe("machines");
+    });
+    expect(calls.filter(c => c.body.text?.startsWith("⚫ a"))).toHaveLength(0);
+    expect(calls.filter(c => c.url.endsWith("/editMessageText"))).toHaveLength(2);
+  });
+  it("opens a fresh start panel even when an earlier status edit is still pending", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.home();
+      const telegram = instance.telegram.bind(instance);
+      let release!: () => void;
+      let editing!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const entered = new Promise<void>(resolve => { editing = resolve; });
+      instance.telegram = async (method, body) => {
+        if (method === "editMessageText") { editing(); await gate; }
+        return telegram(method, body);
+      };
+      const status = instance.card("machine1");
+      await entered;
+      const fresh = instance.text("/start");
+      release();
+      await Promise.all([status, fresh]);
+      expect(instance.get<any>("panel").view).toBe("machines");
+    });
+    expect(calls.filter(c => c.url.endsWith("/sendMessage"))).toHaveLength(2);
+  });
+  it("upgrades old keyboards even when the status text is unchanged", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.card("machine1");
+      const panel = instance.get<any>("panel");
+      const [text] = JSON.parse(panel.signature);
+      panel.signature = JSON.stringify([text, []]);
+      instance.put("panel", panel);
+      await instance.card("machine1", false);
+    });
+    expect(calls.filter(c => c.url.endsWith("/editMessageText"))).toHaveLength(1);
+    expect(calls.at(-1).body.reply_markup.inline_keyboard.flat().some((b: any) => b.text === "更新程序")).toBe(true);
+  });
+  it("routes the update button only to the selected connected computer", async () => {
+    await seed("a"); await seed("b");
+    const sockets: WebSocket[] = [];
+    try {
+      for (const id of ["a", "b"]) {
+        const result = await SELF.fetch("https://relay.example.com/v1/connect", { headers: { Upgrade: "websocket", "X-Device-ID": id, Authorization: "Bearer secret-" + id } });
+        const ws = result.webSocket!; ws.accept(); sockets.push(ws);
+      }
+      const received = new Promise<any>(resolve => sockets[1].addEventListener("message", e => resolve(JSON.parse(e.data as string)), { once: true }));
+      await runInDurableObject(hub(), async (instance: BotHub) => {
+        await instance.click("d:b");
+        await instance.click("update:b");
+        expect(instance.list("cmd:a:")).toHaveLength(0);
+      });
+      expect(await received).toMatchObject({ action: "update", device_id: "b" });
+    } finally { sockets.forEach(s => s.close()); }
   });
   it("misses offline scheduled starts instead of queueing them", async () => {
     await seed();
