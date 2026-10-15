@@ -4,7 +4,8 @@
 
 Telegram 只配置一个 Webhook。Worker 验证 Webhook 密钥，随后校验操作者用户 ID 和聊天 ID。SQLite Durable Object 统一分发。客户端仅主动建立 WSS 连接，无监听端口。
 
-- `POST /v1/enroll`：一次性码、机器名称、系统和默认目录；返回设备 ID 与独立 Token。
+- `POST /v1/enroll`：交互输入的 Bot Token、允许用户 ID、机器名称、系统和默认目录；验证后返回设备 ID 与独立 Token。继续兼容旧版一次性码，不在本地保存输入的 Bot Token。
+- `POST /v1/unenroll`：用设备凭据移除自身绑定及关联命令、定时、选择缓存；不能删除其他设备。
 - `GET /v1/connect`：WebSocket Upgrade，`Authorization: Bearer <设备Token>` 和 `X-Device-ID` 放在请求头，不放 URL。
 - `POST /telegram/webhook`：仅 Telegram Webhook 入口。
 - `GET /healthz`：无敏感信息的存活检查。
@@ -26,5 +27,7 @@ Telegram 只配置一个 Webhook。Worker 验证 Webhook 密钥，随后校验�
 ## 持久化与隔离
 
 设备名称不是身份键，修改名称或 IP 不会创建新设备。云端只存设备 Token 的 SHA-256；客户端本地配置保存自己的 Token。按机器保存时长、间隔、提示词、目录和选定会话。记录最新状态及必要错误分类，不上传完整模型输出。
+
+Windows 包同时提供交互命令行入口和无窗口后台入口。安装/更新暂存位于本机程序目录的 cache，结束时清理；卸载器核对 ownership.json 与绝对路径后清理本机。旧版临时文件只清理可确认归属的项目，不盲删系统临时目录。
 
 新项目使用独立目录、启动项和仓库。参考项目 `C:\Users\adminuser\Downloads\an` 只读，项目中没有对它的运行时依赖。

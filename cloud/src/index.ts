@@ -18,7 +18,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/healthz") return json({ ok: true, protocol: 1 });
-    if (!["/telegram/webhook", "/v1/enroll", "/v1/connect"].includes(url.pathname)) return json({ error: "not found" }, 404);
+    if (!["/telegram/webhook", "/v1/enroll", "/v1/connect", "/v1/unenroll"].includes(url.pathname)) return json({ error: "not found" }, 404);
     if (!env.BOT_TOKEN || !env.WEBHOOK_SECRET || !env.CHAT_ID || !env.ALLOWED_USER_ID) return json({ error: "relay not configured" }, 503);
     if (url.pathname === "/telegram/webhook" && (request.method !== "POST" || request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== env.WEBHOOK_SECRET)) return json({ error: "unauthorized" }, 401);
     return env.HUB.get(env.HUB.idFromName("single-bot")).fetch(request);
@@ -79,6 +79,7 @@ export class BotHub extends DurableObject<Env> {
       if (raw.length > 65536) return json({ error: "too large" }, 413);
       const body: any = JSON.parse(raw);
       if (path === "/v1/enroll") return await this.enroll(body);
+      if (path === "/v1/unenroll") return await this.unenroll(request);
       if (!authorized(body, this.env.ALLOWED_USER_ID, this.env.CHAT_ID)) return json({ ok: true });
       if (!Number.isSafeInteger(body.update_id)) return json({ error: "bad update" }, 400);
       if (this.get("u:" + body.update_id)) return json({ ok: true });
@@ -98,13 +99,18 @@ export class BotHub extends DurableObject<Env> {
     }
   }
   async enroll(body: any): Promise<Response> {
-    if (typeof body.code !== "string" || !/^[a-f0-9]{64}$/.test(body.code)) return json({ error: "配对码无效" }, 401);
-    const key = "enroll:" + await hash(body.code);
-    const code = this.get<{ expires: number }>(key);
-    if (!code || code.expires < now()) return json({ error: "配对码已过期或已使用" }, 401);
     if (!["win32", "darwin"].includes(body.platform)) return json({ error: "只支持 Windows 和 macOS" }, 400);
-    // Consume before the first await: concurrent use cannot enroll twice.
-    this.del(key);
+    if (body.code !== undefined) {
+      // Backward compatibility for already generated v0.1.x pairing commands.
+      if (typeof body.code !== "string" || !/^[a-f0-9]{64}$/.test(body.code)) return json({ error: "配对码无效" }, 401);
+      const key = "enroll:" + await hash(body.code);
+      const code = this.get<{ expires: number }>(key);
+      if (!code || code.expires < now()) return json({ error: "配对码已过期或已使用" }, 401);
+      this.del(key);
+    } else {
+      if (typeof body.bot_token !== "string" || typeof body.user_id !== "string" || body.user_id !== this.env.ALLOWED_USER_ID) return json({ error: "Bot Token 或用户 ID 不匹配" }, 401);
+      if (await hash(body.bot_token) !== await hash(this.env.BOT_TOKEN)) return json({ error: "Bot Token 或用户 ID 不匹配" }, 401);
+    }
     const token = secret();
     const device: Device = { id: id(), name: String(body.name || "新机器").slice(0, 60), platform: body.platform,
       token_hash: await hash(token), settings: settings({ ...defaults, cwd: String(body.cwd || "") }), version: 0, desired: "stopped", seen: 0 };
@@ -112,6 +118,32 @@ export class BotHub extends DurableObject<Env> {
     await this.arm();
     this.ctx.waitUntil(this.say(`已添加 ${device.name}，等待客户端上线。`, [[button("查看机器", "d:" + device.id)]]));
     return json({ device_id: device.id, token, protocol: 1 });
+  }
+  async unenroll(request: Request): Promise<Response> {
+    const deviceId = request.headers.get("X-Device-ID") || "";
+    const token = request.headers.get("Authorization")?.replace(/^Bearer /, "") || "";
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(deviceId) || !token) return json({ error: "unauthorized" }, 401);
+    const tokenHash = await hash(token);
+    const device = this.get<Device>("d:" + deviceId);
+    if (!device) return json({ removed: true });
+    if (device.token_hash !== tokenHash) return json({ error: "unauthorized" }, 401);
+    await this.eraseDevice(deviceId);
+    return json({ removed: true });
+  }
+  async eraseDevice(deviceId: string) {
+    const device = this.get<Device>("d:" + deviceId);
+    for (const ws of this.ctx.getWebSockets(deviceId)) ws.close(4003, "revoked");
+    for (const key of ["d:", "dirs:", "stopat:"]) this.del(key + deviceId);
+    this.ctx.storage.sql.exec("DELETE FROM records WHERE json_extract(value, '$.device_id')=?", deviceId);
+    const batch = this.get<string[]>("batch");
+    if (batch) this.put("batch", batch.filter(value => value !== deviceId));
+    const input = this.get<any>("input");
+    if (input?.ids?.includes(deviceId)) {
+      input.ids = input.ids.filter((value: string) => value !== deviceId);
+      if (input.ids.length) this.put("input", input, input.expires);
+      else this.del("input");
+    }
+    if (device?.card_id) this.ctx.waitUntil(this.telegram("deleteMessage", { chat_id: this.env.CHAT_ID, message_id: device.card_id }).catch(() => undefined));
   }
   async connectDevice(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return json({ error: "websocket required" }, 426);
@@ -286,7 +318,7 @@ export class BotHub extends DurableObject<Env> {
     const task = device.state?.task;
     const phase: Record<string, string> = { waiting: "等待开始", running: "执行中", holding: "保持中", retrying: "等待重试", stopping: "正在停止", stopped: "已停止", paused: "异常暂停" };
     const active = task && !["stopped", "paused"].includes(task.phase);
-    const text = `${this.online(device) ? "🟢" : "⚫"} ${device.name}\n状态：${phase[task?.phase] || "待命"}\n会话：${device.settings.thread_id || "新建会话"}\n目录：${device.settings.cwd || "未设置"}\n保持：${device.settings.hold_minutes === null ? "不限时" : device.settings.hold_minutes + " 分钟"}\n发送间隔：${device.settings.interval_minutes} 分钟\n已完成：${task?.rounds || 0} 轮${active && task.first_success_at ? `\n已保持：${Math.max(0, Math.floor((now() - task.first_success_at) / 60))} 分钟` : ""}${active && task.deadline ? `\n剩余：${Math.max(0, Math.ceil((task.deadline - now()) / 60))} 分钟\n停止时间：${localTime(task.deadline)}` : ""}${active && task.phase !== "running" && task.next_at ? `\n下次发送：${localTime(task.next_at)}` : ""}${task?.reason ? `\n说明：${task.reason}` : ""}`;
+    const text = `${this.online(device) ? "🟢" : "⚫"} ${device.name}\n客户端：${device.state?.agent_version || "等待上报"}\n状态：${phase[task?.phase] || "待命"}\n会话：${device.settings.thread_id || "新建会话"}\n目录：${device.settings.cwd || "未设置"}\n保持：${device.settings.hold_minutes === null ? "不限时" : device.settings.hold_minutes + " 分钟"}\n发送间隔：${device.settings.interval_minutes} 分钟\n已完成：${task?.rounds || 0} 轮${active && task.first_success_at ? `\n已保持：${Math.max(0, Math.floor((now() - task.first_success_at) / 60))} 分钟` : ""}${active && task.deadline ? `\n剩余：${Math.max(0, Math.ceil((task.deadline - now()) / 60))} 分钟\n停止时间：${localTime(task.deadline)}` : ""}${active && task.phase !== "running" && task.next_at ? `\n下次发送：${localTime(task.next_at)}` : ""}${task?.reason ? `\n说明：${task.reason}` : ""}`;
     const rows: Rows = [
       [button("开始", "start:" + deviceId), button("立即停止", "stop:" + deviceId)],
       [button("选择会话", "sessions:" + deviceId), button("新建并开始", "new:" + deviceId)],
@@ -343,14 +375,12 @@ export class BotHub extends DurableObject<Env> {
     const [action, deviceId, arg] = data.split(":");
     if (action === "home") return this.home();
     if (action === "add") {
-      const code = secret();
-      this.put("enroll:" + await hash(code), { expires: now() + 600 }, now() + 600);
       const release = `https://github.com/a06342637/codex-any-bot/releases/download/${this.env.RELEASE_TAG}`;
       const server = this.env.PUBLIC_BASE_URL.replace(/\/$/, "");
       if (!/^https:\/\/[a-zA-Z0-9.-]+$/.test(server) || !/^v\d+\.\d+\.\d+$/.test(this.env.RELEASE_TAG)) throw new Error("托管端地址或发布版本配置无效");
-      const win = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); Invoke-WebRequest '${release}/install.ps1' -OutFile $p; & $p -Server '${server}' -Code '${code}'"`;
-      const mac = `p=$(mktemp); curl -fLsS '${release}/install.sh' -o "$p" && bash "$p" --server '${server}' --code '${code}'; rm -f "$p"`;
-      await this.say("一次性配对命令：十分钟内有效，任选一台机器使用。\n\nWindows CMD / PowerShell：\n" + win);
+      const win = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest '${release}/install.ps1' -OutFile $p; & $p -Server '${server}' } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"`;
+      const mac = `(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS '${release}/install.sh' -o "$p" && bash "$p" --server '${server}')`;
+      await this.say("在要接入的电脑运行后，输入本机器人的 Bot Token 和你的数字用户 ID。CF 地址已填好；Token 只作绑定校验，不保存在电脑。此命令可用于多台电脑。\n\nWindows（请在 CMD 执行）：\n" + win);
       return this.say("Mac 终端：\n" + mac);
     }
     if (action === "batch") return this.batch();
@@ -446,10 +476,8 @@ export class BotHub extends DurableObject<Env> {
     if (action === "remove") return this.say(`移除 ${device.name} 后凭据失效；若在线将停止客户端，离线时无法立即中断已在执行的一轮。`, [[button("确认移除", "confirmremove:" + deviceId), button("取消", "d:" + deviceId)]]);
     if (action === "confirmremove") {
       await this.issue(deviceId, "revoke", {});
-      for (const ws of this.ctx.getWebSockets(deviceId)) ws.close(4003, "revoked");
-      this.del("d:" + deviceId);
-      for (const item of this.list<Schedule>("schedule:")) if (item.device_id === deviceId) this.del("schedule:" + item.id);
-      return this.say(`${device.name} 已移除。重新接入需要新配对码。`);
+      await this.eraseDevice(deviceId);
+      return this.say(`${device.name} 的绑定、参数和定时记录已移除。电脑上的文件请使用本机卸载命令清理。`);
     }
     if (action === "schedule") {
       const rows: Rows = [[button("添加定时启动", "schedstart:" + deviceId), button("添加定时停止", "schedstop:" + deviceId)]];

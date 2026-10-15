@@ -29,6 +29,44 @@ async function webhook(update: any, token = "test-secret") {
 }
 
 describe("real SQLite-backed Durable Object", () => {
+  it("enrolls multiple computers with owner token and ID without persisting the bot token", async () => {
+    const enroll = () => SELF.fetch("https://relay.example.com/v1/enroll", { method: "POST", body: JSON.stringify({ platform: "win32", name: "Windows", cwd: "C:\\work", bot_token: "test-token", user_id: "42" }) });
+    const a: any = await (await enroll()).json();
+    const b: any = await (await enroll()).json();
+    expect(a.device_id).not.toBe(b.device_id);
+    expect(a.token).not.toBe("test-token");
+    await runInDurableObject(hub(), (instance: BotHub) => {
+      expect(JSON.stringify(instance.list("d:"))).not.toContain("test-token");
+      expect(instance.list("d:")).toHaveLength(2);
+    });
+  });
+  it("rejects a wrong bot token or owner ID", async () => {
+    for (const auth of [{ bot_token: "wrong", user_id: "42" }, { bot_token: "test-token", user_id: "999" }]) {
+      const r = await SELF.fetch("https://relay.example.com/v1/enroll", { method: "POST", body: JSON.stringify({ ...auth, platform: "darwin" }) });
+      expect(r.status).toBe(401);
+    }
+  });
+  it("uninstall deletes device records, schedules and selections without touching another computer", async () => {
+    await seed("a"); await seed("b");
+    await runInDurableObject(hub(), (instance: BotHub) => {
+      instance.put("dirs:a", ["C:\\work"]);
+      instance.put("stopat:a", 123);
+      instance.put("schedule:s", { device_id: "a", id: "s" });
+      instance.put("session:s", { device_id: "a", id: "t" });
+      instance.put("cmd:a:c", { device_id: "a", id: "c" });
+      instance.put("batch", ["a", "b"]);
+      instance.put("input", { ids: ["a", "b"], expires: now() + 60 });
+    });
+    const request = (token: string) => SELF.fetch("https://relay.example.com/v1/unenroll", { method: "POST", headers: { Authorization: "Bearer " + token, "X-Device-ID": "a" }, body: "{}" });
+    expect((await request("wrong")).status).toBe(401);
+    expect((await request("secret-a")).status).toBe(200);
+    await runInDurableObject(hub(), (instance: BotHub) => {
+      for (const key of ["d:a", "dirs:a", "stopat:a", "schedule:s", "session:s", "cmd:a:c"]) expect(instance.get(key)).toBeUndefined();
+      expect(instance.device("b").id).toBe("b");
+      expect(instance.get("batch")).toEqual(["b"]);
+      expect(instance.get<any>("input").ids).toEqual(["b"]);
+    });
+  });
   it("rejects bad webhook secrets and ignores unauthorized users", async () => {
     expect((await webhook({}, "wrong")).status).toBe(401);
     await webhook({ update_id: 1, message: { from: { id: 999 }, chat: { id: 42 }, text: "/start" } });

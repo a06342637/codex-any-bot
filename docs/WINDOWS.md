@@ -2,202 +2,190 @@
 
 [返回首页](../README.md) · [先部署 CF](DEPLOY.md) · [TG 操作](TELEGRAM.md) · [问题排查](TESTING.md)
 
-本页适用于 Windows x64 / ARM64、当前 v0.1.1。接入时使用 **CMD（命令提示符）**；本页所有 bat 命令块都在 CMD 执行。
+适用于 v0.2.0、Windows x64 / ARM64。下面命令均在 **CMD（命令提示符）** 执行。
 
-## 1. 开始前确认两件事
+## 1. 准备好 CF 与 Codex
 
-1. 已按 [CF 教程](DEPLOY.md)部署服务，向自己的 Bot 发送 /start 能看到“添加机器”。
-2. 这台电脑已安装并登录 Codex CLI。
+先完成 [CF 部署](DEPLOY.md)。需要知道自己的 CF 根地址、Bot Token 和允许操作的数字用户 ID。不要填写别人的 CF 地址。
 
-本程序安装包包含 Python 运行环境。只作为受控电脑时，不需要为本程序安装 Python、Git 或 Node.js；如果还要用 npm 安装 Codex，则需要 Node.js。
-
-在开始菜单搜索 CMD，打开后检查：
+这台电脑还需安装并登录 Codex CLI：
 
 ~~~bat
 codex --version
 codex login status
 ~~~
 
-未登录时运行：
+未登录时：
 
 ~~~bat
 codex login
 ~~~
 
-按 Codex 的提示完成本机登录。如果命令找不到，先安装 Codex CLI。选择 npm 安装方式时，安装 Node.js 后重新打开 CMD，再执行：
+若找不到命令，可按 [Codex CLI 官方说明](https://developers.openai.com/codex/cli/)安装。选择 npm 方式时，需要先装 Node.js，再在新 CMD 中运行：
 
 ~~~bat
 npm.cmd install -g @openai/codex
 codex login
 ~~~
 
-已有可用 CLI 不必重装。桌面端能打开不一定代表 CLI 已登录，以登录检查结果为准。[Codex CLI 官方说明](https://developers.openai.com/codex/cli/)
+已有可用 CLI 不必重装。本客户端安装包包含自身 Python 运行环境，不需要为客户端另外安装 Python 或 Git。桌面端登录与 CLI 登录不一定相同，以实际检查结果为准。
 
-## 2. 为这台电脑生成配对命令
+## 2. 运行安装命令
 
-在同一个 TG Bot 中：
-
-1. 发送 /start。
-2. 点击“添加机器”。
-3. 找到机器人回复中的 **Windows 命令**，复制完整一行。
-
-配对码十分钟有效，只能绑定一台电脑。过期或已使用时重新生成。电脑 A、电脑 B 要分别点“添加机器”，不能复制同一条命令给多台电脑。
-
-**这里不再输入 Bot Token、用户 ID 或 CF 账号。** 这些已在部署 CF 时配置，配对命令负责把本机绑定到该服务。
-
-## 3. 在 CMD 执行，等待后台上线
-
-在要接入的电脑打开 CMD。先进入希望作为默认工作目录的位置，例如：
+在 CMD 进入默认工作目录，例如：
 
 ~~~bat
 cd /d "%USERPROFILE%\Documents"
 ~~~
 
-也可以改为自己实际存在的项目目录。然后在同一窗口粘贴 TG 生成的 Windows 命令，按回车。
-
-程序会下载固定版本、校验归档、安装客户端、检查 Codex、完成配对、注册登录启动任务，并在后台启动。成功时会显示类似：
-
-~~~text
-Bound successfully / 绑定成功，客户端将上线待命。
-Installed. The client runs in the background and starts when you sign in.
-~~~
-
-它还会显示本机的状态查询和卸载命令。**没有报错且显示安装成功后，才关闭窗口。**
-
-回到 TG 点击“刷新”，应能看到这台电脑上线。初始名称通常是系统电脑名，可以在“机器设置 → 重命名”中修改。
-
-### 如果当前打开的是 PowerShell
-
-当前 Bot 生成的 Windows 接入命令采用 CMD 的引号方式，内含 PowerShell 变量。直接粘贴进 PowerShell 可能提前展开变量，导致无法执行。
-
-先在 PowerShell 输入：
+运行下面完整一行：
 
 ~~~bat
-cmd
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.0/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
 ~~~
 
-进入 CMD 后，再粘贴机器人给出的命令。不要把命令截断，也不要把示例配对码当成实际配对码。
+另一种方式：在自己的 Bot 点“添加机器”，复制它给出的 Windows 命令。该命令已包含你的 CF 地址，后面不用再填地址。
 
-## 4. 关闭窗口后的运行方式
+**请在 CMD 执行。** 如果当前打开的是 PowerShell，先输入 cmd 进入 CMD，再粘贴整行；直接在 PowerShell 粘贴可能提前展开命令中的变量。
 
-- 客户端后台运行，不需要保留 CMD 窗口。
-- Windows 任务计划程序中的任务名是 **codex-any-bot**，在当前用户登录后启动。
-- 使用当前用户的身份和 Codex 配置，不会让 Windows 自动登录。
-- 电脑关机、休眠、退出登录或断网时不保证能接受即时控制。
-- 首次安装、重新登录、重启客户端或更新后，均先上线待命，不会自动开始挤。
+## 3. 按提示输入信息
 
-在 TG 选择这台电脑，再选择已有会话或新建会话，设置保持时长、发送间隔后点“开始”。详见 [TG 操作教程](TELEGRAM.md)。
+| 提示 | 填什么 |
+| --- | --- |
+| CF HTTPS 地址 | 自己部署的根地址，不带 /telegram/webhook；命令已预填时不再询问。 |
+| Bot Token | 从 BotFather 取得的 Token，输入时不显示字符。 |
+| 你的 Telegram 数字用户 ID | 与 CF 中配置的允许用户 ID 一致，不是 @用户名。 |
+
+输入的 Bot Token 仅通过 HTTPS 交给自己的 CF 服务核对，**不会写进电脑配置或日志**。绑定成功后，本机使用独立设备凭据。
+
+Windows 包含两个入口：命令行入口负责初次输入、状态查看和维护；后台入口负责无窗口运行。不要绕过安装器去双击后台程序输入信息。
+
+命令可以在多台电脑使用，每台各输入一次信息，获得不同设备 ID。旧版一次性配对码接口仍兼容，但不是 v0.2.0 的主要接入方式。
+
+## 4. 查看结果，关闭窗口
+
+安装器会校验下载文件、安装客户端、配置当前用户登录启动项，并启动后台程序。
+
+如果已连接控制服务，会显示：
+
+~~~text
+Online in Telegram. Waiting for your commands.
+~~~
+
+随后会打印本机的：
+
+~~~text
+Install directory: 安装目录
+Log: agent.log 的完整路径
+Config (private): 配置文件完整路径
+Status: 查看状态的命令
+Uninstall: 完整卸载命令
+~~~
+
+若只安装成功但未确认连接，会给出警告。此时先检查日志和网络，不要把“下载完成”当成上线。
+
+回到 TG，发送 /start 或点“刷新”，确认设备在线。初始名称来自电脑主机名，可在“机器设置 → 重命名”中修改。然后关闭 CMD 即可。
+
+客户端在当前用户登录后自动启动，任务计划程序中的任务名为 codex-any-bot。关机、休眠、退出登录或断网时不保证即时控制；安装、重启、更新后均先待命，不自动开始挤。
 
 ## 5. 打印日志路径、查看日志和状态
 
-安装器当前不一定专门打印日志路径。安装完成后在 CMD 执行下面命令，可以把准确位置打印出来并打开目录：
+安装器已经打印日志位置，需要再次查看时在 CMD 执行：
 
 ~~~bat
 echo 日志位置：%LOCALAPPDATA%\codex-any-bot\agent.log
 explorer "%LOCALAPPDATA%\codex-any-bot"
-~~~
-
-用记事本打开日志：
-
-~~~bat
 notepad "%LOCALAPPDATA%\codex-any-bot\agent.log"
 ~~~
 
-| 文件/目录 | 内容 |
+| 文件/目录 | 用途 |
 | --- | --- |
-| agent.log、agent.log.1 等 | 客户端轮换日志。 |
-| config.json | 本机设备 ID、服务地址及设备凭据，不要公开分享。 |
-| state.sqlite 及其附属文件 | 参数、任务状态、命令去重记录。 |
-| current.json / previous.json | 当前和上一版本程序路径。 |
-| versions | 安装过的客户端版本。 |
-| uninstall.ps1 | 本机卸载脚本。 |
+| agent.log 及轮换副本 | 客户端日志。 |
+| config.json | 独立设备凭据、CF 地址，不包含输入的 Bot Token；勿公开分享。 |
+| state.sqlite 及附属文件 | 参数、任务状态、命令去重。 |
+| current.json / previous.json | 当前及上一版本路径。 |
+| versions | 当前和旧版程序，用于回退。 |
+| cache | 安装、更新暂存位置；完成后清理。 |
+| ownership.json | 标识本项目安装目录，卸载时校验。 |
+| uninstall.ps1 | 完整卸载脚本。 |
 
-直接使用已安装客户端查看状态，不需要另外安装 Python。下面整行仍在 **CMD** 执行：
+查看本地状态，下面整行仍在 CMD 执行：
 
 ~~~bat
-powershell -NoProfile -Command "& ((Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'codex-any-bot\current.json') -Raw | ConvertFrom-Json).executable) status"
+powershell -NoProfile -Command "& ((Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'codex-any-bot\current.json') -Raw | ConvertFrom-Json).console_executable) status"
 ~~~
 
-将末尾的 status 换成 diagnose 可检查 Codex 版本和 CLI 登录状态，换成 --version 可查看客户端版本。正常情况下也可以直接使用 TG 的“诊断”按钮。
+将 status 换成 diagnose 可检查 Codex 路径和登录，换成 --version 可查看客户端版本。TG 设备卡片也显示客户端版本。
 
-中文输出乱码时，可以在当前 CMD 运行 chcp 65001 后再查看；这只调整当前终端的代码页。
+## 6. TG 一键更新，电脑不用操作
 
-## 6. 在 TG 一键更新，电脑不用重新输入命令
+新的正式 Release 发布后：
 
-当项目发布新的正式安装包后：
+1. 确认电脑在 TG 中在线。
+2. 点击“机器设置 → 更新客户端”。
+3. 等待下载、校验和安装；期间可能短暂离线。
+4. 重新上线后查看客户端版本，需要继续任务时再点“开始”。
 
-1. 确认这台电脑在 TG 中在线。
-2. 打开机器卡片，点击“机器设置 → 更新客户端”。
-3. 等待下载、校验和安装。期间可能短暂离线。
-4. 客户端重新上线后先待命，需要继续时再点“开始”。
+不需要重新运行安装命令，也不重新询问 Token 和 ID。更新会停止当前任务并保留旧版本用于回退，安装成功后继续后台待命。
 
-更新会停止当前执行，旧版本目录会保留用于回退。下载或安装失败时检查 agent.log；旧版恢复措施不等于所有故障都能自动恢复，最终以设备是否重新上线为准。
-
-**TG 按钮更新电脑客户端，不更新 CF 控制服务。** 云端升级按 [CF 更新说明](DEPLOY.md#9-更新电脑端与云端分别处理)执行一次。
+**云端代码有变化时需要单独更新 CF。** 从 v0.1.x 升级到本版，先按 [CF 更新说明](DEPLOY.md#9-更新电脑端与云端分别处理)部署云端，再在 TG 更新客户端。
 
 ## 卸载与清理
 
-本节针对本项目。不会删除你的 Codex 会话、Codex 登录资料、原项目代码，也不会卸载你原本安装的 Python、Node.js 或 Git。
+### 1. 先停止任务，等待更新结束
 
-### 1. 先结束任务和更新
+在 TG 点“立即停止”。如果正在更新，等更新结束后再卸载，避免安装器与卸载同时运行。
 
-先在 TG 点“立即停止”，确认任务结束。如果正在更新客户端，等更新结束后再卸载，避免安装器重新启动客户端。
+### 2. 执行完整卸载
 
-### 2. 删除客户端、配置、日志和自启动项
-
-在 CMD 执行：
+在 CMD 执行安装器打印的命令，默认路径如下：
 
 ~~~bat
 powershell -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\codex-any-bot\uninstall.ps1" -Purge
 ~~~
 
--Purge 会删除本机安装目录，包括配置、日志、数据库和保留的旧版本。需要保留这些数据时，去掉 -Purge，只移除运行程序和登录启动项。
+程序会：
 
-卸载脚本报错时先处理错误，不能把命令已运行当成卸载成功。如果提示找不到脚本，先确认是否安装过、是否已卸载，不要直接删除整个 AppData 目录。
+1. 停止本客户端及其执行任务。
+2. 移除本用户的 codex-any-bot 登录启动任务。
+3. 尝试清理本设备的 CF 绑定、参数、定时任务及选择缓存。
+4. 清理能够确认归属的旧版临时下载文件。
+5. 删除本机安装目录，包括当前/旧版本、配置、数据库、日志及缓存。
 
-### 3. 检查本机清理结果
+不需要保留数据时使用 -Purge。明确需要保留配置时可使用 -KeepData；它不属于完整卸载。
+
+### 3. 确认结果
+
+正常完成会显示本机数据和启动项已移除。检查：
 
 ~~~bat
-if exist "%LOCALAPPDATA%\codex-any-bot" (echo 安装目录仍存在，请检查卸载错误) else (echo 安装目录已删除)
+if exist "%LOCALAPPDATA%\codex-any-bot" (echo 安装目录仍存在，请检查错误) else (echo 安装目录已删除)
 schtasks /Query /TN "codex-any-bot"
 ~~~
 
-第二条在卸载成功后应提示找不到该任务。如果任务仍在，先检查卸载输出。
+第二条应提示找不到任务。若卸载报错或目录仍在，不要认为已完整清理。
 
-### 4. 清理临时下载文件
+云端不可达时，会明确提示“Cloud binding could not be removed”。本机仍会清理，但之后要在 TG 点“移除绑定”，或恢复云端连接后处理。旧版临时文件被占用时也会打印未完成路径。
 
-**v0.1.1 的 -Purge 不会统一清理系统临时目录。** 在 CMD 打开：
+### 4. 清理边界
 
-~~~bat
-explorer "%TEMP%"
-~~~
-
-根据安装/更新时间和文件内容，检查本项目留下的：
-
-- codex-any-bot- 后接随机标识的下载暂存文件夹，里面通常是本项目安装包。
-- anybot-update- 开头、包含本项目更新安装脚本的文件夹。
-- anybot- 开头的首次接入 .ps1 临时脚本。
-
-确认属于本项目且没有安装/更新正在运行后再删除。不要删除整个 TEMP，也不要只凭模糊名称批量删除其他程序的文件。
-
-### 5. 移除 TG 绑定和其他副本
-
-在 TG 进入“机器设置 → 移除绑定 → 确认移除”，使该设备凭据失效。其他电脑的绑定不受影响。
-
-如果这台电脑还下载过源码 ZIP、Git 仓库或手动下载的安装包，它们不在客户端安装目录中；不再需要时另行删除自己的这些副本。整个 CF 服务也不再使用时，按 [CF 停用说明](DEPLOY.md#10-停用与数据清理)处理云端资源。
-
-**完整清理需要以上各项检查。当前版本没有“一条命令自动清理本机、临时目录和云端全部记录”的功能。**
+- 新版自动创建的安装、缓存、配置、日志和启动项都由卸载器处理。
+- 老版本临时文件只删除能确认属于本项目的内容；有其他用户文件或无法确认的目录不会误删。
+- 手动下载的源码 ZIP、Git 仓库、另存的安装包和 TG 聊天历史属于用户资料，不自动删除；不再需要时自行删除。
+- 不删除你原本的 Codex 会话、登录资料、Python、Node.js、Git或原项目目录。
+- 所有电脑都不再使用时，再按 [CF 停用说明](DEPLOY.md#10-停用与数据清理)清理整个云端服务。
 
 ## 常见问题
 
 | 现象 | 处理 |
 | --- | --- |
-| 粘贴命令出现变量、赋值或路径错误 | 确认是在 CMD 中执行完整 Windows 命令，未直接粘贴到 PowerShell。 |
-| 找不到 Codex 或未登录 | 先在同一 Windows 用户下完成 CLI 安装和登录。 |
-| 配对码失效 | 在 TG 重新点“添加机器”，不要复用已用过的命令。 |
-| Already installed | 本机已有配置；更新用 TG 按钮，重新绑定先按教程卸载清理。 |
-| 设备一直离线 | 检查安装输出、agent.log、网络和 CF 服务地址。 |
-| 会话被占用 | 在 Codex 桌面端释放对应会话后重试，不删除写锁。 |
-| 自定义 Codex 路径 | 可配置用户环境变量 ANYBOT_CODEX 为原生 codex.exe 的绝对路径，然后重启客户端。 |
+| 只想输入 Token 和 ID | 使用 Bot“添加机器”生成的命令，CF 地址已预填。 |
+| 提示必须使用交互终端 | 在 CMD 运行完整安装命令，不要向程序传入管道输入，也不要调用后台入口做 setup。 |
+| 绑定失败 | 检查自己的 CF 地址、Token、数字 ID，并确认云端已更新到 v0.2.0。 |
+| Codex 未登录 | 在同一 Windows 用户下完成 CLI 登录。 |
+| Already installed | 更新在 TG 操作；重新绑定先完整卸载。 |
+| 未确认上线 | 查看安装器打印的日志，检查 CF HTTPS/WSS 与网络。 |
+| 找不到卸载脚本 | 确认安装目录和版本；不要从源码目录直接运行卸载脚本。 |
+| 卸载拒绝路径 | 目录或 ownership.json 被移动/修改，先确认路径，不要扩大删除范围。 |
 
 更多见 [问题排查](TESTING.md)。

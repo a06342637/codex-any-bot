@@ -2,16 +2,13 @@
 
 [返回首页](../README.md) · [先部署 CF](DEPLOY.md) · [TG 操作](TELEGRAM.md) · [问题排查](TESTING.md)
 
-本页适用于 Mac Apple Silicon / Intel、当前 v0.1.1。所有 bash 命令块都在 macOS 的“终端”中执行。
+适用于 v0.2.0、Mac Apple Silicon / Intel。以下命令在 macOS 的“终端”执行。
 
-## 1. 开始前确认两件事
+## 1. 准备 CF 和 Codex
 
-1. 已完成 [CF 部署](DEPLOY.md)，向自己的 Bot 发送 /start 能看到“添加机器”。
-2. 这台 Mac 已安装并登录 Codex CLI。
+先完成 [CF 部署](DEPLOY.md)，准备自己的 CF 根地址、Bot Token 和允许操作的数字用户 ID。
 
-客户端安装包包含 Python 运行环境。只作为受控电脑时，不需要为本程序另装 Python、Git 或 Node.js；用 npm 安装 Codex 本身时才需要 Node.js。
-
-打开“终端”，检查：
+这台 Mac 需要可用并已登录的 Codex CLI：
 
 ~~~bash
 codex --version
@@ -24,135 +21,137 @@ codex login status
 codex login
 ~~~
 
-若找不到命令，先安装 Codex CLI。选择 npm 方式时，安装 Node.js 后重新打开终端，再运行：
+若找不到命令，可按 [Codex CLI 官方说明](https://developers.openai.com/codex/cli/)安装。选择 npm 方式时先装 Node.js，再运行：
 
 ~~~bash
 npm install -g @openai/codex
 codex login
 ~~~
 
-已有可用 CLI 不必重装。桌面端登录与 CLI 登录不一定相同，以检查结果为准。[Codex CLI 官方说明](https://developers.openai.com/codex/cli/)
+已有可用 CLI 不必重装。安装包包含本客户端运行依赖，不需要为本程序另装 Python 或 Git。
 
-## 2. 从同一个 Bot 获取 Mac 命令
+## 2. 运行一键安装命令
 
-1. 向自己的 Bot 发送 /start。
-2. 点击“添加机器”。
-3. 复制机器人给出的 **Mac 命令**。
-
-配对码十分钟有效，只能使用一次。给另一台电脑接入时重新生成，不能把同一个码用于多台电脑。
-
-**不用在 Mac 上再次注册 CF、部署服务或输入 Bot Token。** 当前 CF 版本已经在首次部署时配置了 Bot Token 和你的用户 ID。
-
-## 3. 运行命令，后台上线
-
-在终端进入希望作为默认工作目录的位置，例如：
+先进入希望作为默认工作目录的位置：
 
 ~~~bash
 cd "$HOME/Documents"
 ~~~
 
-也可以替换为实际项目目录。然后粘贴 TG 生成的完整 Mac 命令并运行。
+运行下面完整一行：
 
-安装器会识别 Apple Silicon / Intel，下载对应的固定版本归档、验证 SHA-256、安装客户端、检查 Codex、完成配对并创建登录启动项。
-
-正常完成时会显示类似：
-
-~~~text
-Bound successfully / 绑定成功，客户端将上线待命。
-Installed. The client starts in the background when you sign in.
+~~~bash
+(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.0/install.sh' -o "$p" && bash "$p")
 ~~~
 
-**确认没有报错且显示安装成功后，再关闭终端。** 回到 TG 点击“刷新”，应能看到 Mac 上线；可以在“机器设置 → 重命名”中改成易辨认的名称。
+也可以去 Bot 点击“添加机器”，使用它给出的 Mac 命令；该命令已预填自己的 CF 地址。
 
-若系统阻止运行或安装输出报错，先检查错误信息与发布来源，不要把下载完成当成安装成功。
+**不要改成 curl | bash。** 安装需要从终端读取信息，脚本应先下载到文件再执行，命令结束会清理启动脚本。
 
-## 4. 后台运行的含义
+## 3. 输入信息
 
-- 关闭终端不影响后台客户端。
-- 登录启动项标签是 **com.codex-any-bot.agent**，使用当前用户身份运行。
-- 登录后自动上线；不会替你登录 macOS，也不会阻止系统休眠。
-- 关机、休眠、退出登录或网络不可用时，不保证能接收即时控制。
-- 首次安装、重新登录、重启或更新客户端后均先待命，不自动开始挤。
+依次填写：
 
-在 TG 选择这台 Mac，选已有会话或新建会话，设置保持时长、发送间隔后再开始。[查看 TG 操作教程](TELEGRAM.md)
+| 提示 | 内容 |
+| --- | --- |
+| CF HTTPS 地址 | 自己部署的根地址；使用 Bot 生成的命令时不再询问。 |
+| Bot Token | BotFather 提供的 Token，输入时不显示字符。 |
+| Telegram 数字用户 ID | 与 CF 中允许控制设备的用户 ID 一致。 |
+
+Token 只通过 HTTPS 用于本次绑定，**不写进本机配置或日志**。之后使用独立设备凭据连接。
+
+同一命令可用于不同电脑，每台输入一次信息、创建独立设备身份。无需每台注册 CF，也无需重复部署云端。
+
+## 4. 确认后台上线
+
+安装器会自动识别 Apple Silicon / Intel，下载并校验归档，安装客户端并创建当前用户的登录启动项。
+
+绑定后会检查连接状态，成功时显示“Online / 已连接 TG 控制服务”。随后打印：
+
+~~~text
+Install directory: 本机安装目录
+Log: 日志完整路径
+Config (private): 配置文件路径
+Status: 查看状态的命令
+Uninstall: 完整卸载命令
+~~~
+
+如果显示“已安装，尚未确认上线”，先查看日志与网络，再去 TG 刷新。不要把下载完成当成上线成功。
+
+确认后关闭终端即可。登录启动项标签为 com.codex-any-bot.agent；当前用户登录后后台启动，初次安装、重启或更新后先待命。关机、休眠、退出登录或断网时不保证即时控制。
 
 ## 5. 打印日志位置、查看日志和状态
 
-安装后在终端执行：
+安装器会直接打印日志路径。以后需要再次查看时：
 
 ~~~bash
 printf '日志位置：%s\n' "$HOME/Library/Application Support/codex-any-bot/agent.log"
 open "$HOME/Library/Application Support/codex-any-bot"
 ~~~
 
-查看最近 50 行并持续跟踪：
+查看最近 50 行并跟踪：
 
 ~~~bash
 tail -n 50 -f "$HOME/Library/Application Support/codex-any-bot/agent.log"
 ~~~
 
-按 Control+C 只退出日志查看，不会停止后台客户端。
+按 Control+C 只退出日志查看，不停止后台客户端。
 
-| 文件/目录 | 内容 |
+| 文件/目录 | 用途 |
 | --- | --- |
-| agent.log、agent.log.1 等 | 客户端轮换日志。 |
-| launch-error.log / launch-output.log | 登录启动进程的错误与输出。 |
-| update-error.log | 部分更新回退过程的输出，未发生时可能不存在。 |
-| config.json | 设备凭据和服务地址，不要公开分享。 |
-| state.sqlite 及其附属文件 | 参数、任务状态、命令去重。 |
+| agent.log 及轮换副本 | 客户端日志。 |
+| launch-error.log / launch-output.log | 登录启动错误与输出。 |
+| update-error.log | 部分更新回退输出，未发生时可能不存在。 |
+| config.json | 独立设备凭据和 CF 地址，不含输入的 Bot Token；勿公开分享。 |
+| state.sqlite 及附属文件 | 参数、状态、命令去重。 |
 | current.json / previous.json | 当前和上一版本路径。 |
-| versions | 安装过的客户端版本。 |
+| versions | 当前/旧版程序。 |
+| cache | 安装更新暂存，完成后清理。 |
+| ownership.json | 本项目目录标识。 |
 
-使用已安装客户端查询状态，不需要额外安装 Python：
+直接使用已安装的客户端查询，不需要另装 Python：
 
 ~~~bash
 client_bin=$(/usr/bin/plutil -extract executable raw -o - "$HOME/Library/Application Support/codex-any-bot/current.json")
 "$client_bin" status
-~~~
-
-在同一终端执行下面命令，可检查 Codex 登录及客户端版本：
-
-~~~bash
 "$client_bin" diagnose
 "$client_bin" --version
 ~~~
 
-也可以直接使用 TG 的“诊断”按钮。
+TG 设备卡片也显示客户端版本。
 
-## 6. TG 一键更新，Mac 不用重新输入命令
+## 6. 在 TG 一键更新，Mac 不用操作
 
-新的正式安装包发布后：
+新正式版发布后：
 
-1. 确认 Mac 在 TG 中在线。
+1. 确认设备在线。
 2. 点击“机器设置 → 更新客户端”。
-3. 等待下载、校验与安装，期间可能短暂离线。
-4. 重新上线后先待命，需要继续时再点“开始”。
+3. 等待下载、校验和安装；期间可能短暂离线。
+4. 重新上线后查看版本，需要继续任务时再点“开始”。
 
-更新会停止当前执行。旧版本与 previous.json 保留用于回退；更新失败时查看 agent.log、update-error.log，最终以机器是否重新上线为准。
+不需要重新输入 Token、ID 或安装命令。更新会停止当前任务，保留旧版以便回退，成功后后台待命。
 
-**该按钮更新 Mac 客户端，不更新 CF 服务。** 云端升级按 [CF 更新说明](DEPLOY.md#9-更新电脑端与云端分别处理)执行。
+该按钮只更新电脑客户端。云端有变化时按 [CF 更新说明](DEPLOY.md#9-更新电脑端与云端分别处理)操作；从 v0.1.x 升级时先更新 CF，再在 TG 更新客户端。
 
 ## 卸载与清理
 
-本节只处理本项目，不删除原本的 Codex 会话、登录资料或其他软件。
+### 1. 停止任务，等待更新结束
 
-### 1. 先停止任务，等待更新结束
+先在 TG 点“立即停止”。如果正在更新，等结束后再卸载，避免安装器与卸载同时运行。
 
-在 TG 点“立即停止”。如果正在更新客户端，等更新结束后再卸载，避免更新安装器重新启动程序。
+### 2. 运行完整卸载
 
-### 2. 删除程序、配置、日志和登录启动项
-
-在终端运行：
+执行安装器打印的命令，默认是：
 
 ~~~bash
 bash "$HOME/Library/Application Support/codex-any-bot/uninstall.sh" --purge
 ~~~
 
---purge 会删除本项目的安装目录及保留版本。想暂时停止并保留配置时，去掉 --purge；保留模式还会留下本地停止标记，需要重新安装/更新启动流程才能恢复运行。
+卸载器会停止客户端，移除登录启动项，尝试删除本设备的云端绑定与关联状态，清理可识别的旧版临时文件，再删除程序、旧版本、配置、日志、数据库和缓存。
 
-卸载报错时先处理错误，不能把已运行命令当作完成。
+明确需要保留数据时可使用 --keep-data，它不属于完整卸载。
 
-### 3. 检查卸载结果
+### 3. 检查结果
 
 ~~~bash
 test ! -d "$HOME/Library/Application Support/codex-any-bot" && echo "安装目录已删除"
@@ -160,37 +159,28 @@ test ! -f "$HOME/Library/LaunchAgents/com.codex-any-bot.agent.plist" && echo "�
 launchctl print "gui/$(id -u)/com.codex-any-bot.agent"
 ~~~
 
-第三条在卸载成功后应提示找不到该服务。若目录、文件或服务仍在，检查卸载输出。
+第三条应提示找不到服务。若目录或启动项仍在，检查卸载错误。
 
-### 4. 检查临时文件
+网络不可用时会报告“Cloud binding could not be removed”，不会误报云端已清理；之后可从 TG 移除绑定。清理旧版文件失败也会报告未完成路径。
 
-正常安装会自动清理下载暂存目录。**v0.1.1 的 --purge 不会统一扫描所有系统临时位置**；远程更新可能留下 anybot-update- 开头的文件夹，异常中断也可能留下暂存文件。
+### 4. 哪些由卸载器清理
 
-在终端打开当前用户临时目录：
-
-~~~bash
-open "$TMPDIR"
-~~~
-
-按更新/安装时间与文件内容确认哪些属于本项目，再删除对应项目。不要删除整个临时目录，也不要盲删无法确认用途的随机目录。
-
-### 5. 移除 TG 绑定与不再需要的副本
-
-在 TG 点击“机器设置 → 移除绑定 → 确认移除”，使本机设备凭据失效。其他机器不受影响。
-
-手动下载的安装包、源码 ZIP 或 Git 副本不在客户端安装目录里，不再需要时另行清理。整个 CF 服务也不再使用时，按 [CF 停用说明](DEPLOY.md#10-停用与数据清理)检查云端资源。
-
-**当前没有一条命令自动清理本机、临时目录和云端全部记录的功能；完整清理需要上述逐项检查。**
+- 新版创建的安装文件、旧版本、配置、日志、缓存和登录启动项均会删除。
+- 能确认归属的旧版临时下载文件会清理；有其他用户文件或无法确认用途的目录不会误删。
+- 手动下载的源码/安装包、TG 聊天历史属于用户资料，不自动删除；不需要时自行清理。
+- 你已有的 Codex 会话、账号资料、Python、Node.js、Git和原项目不属于本程序残留，不会被删除。
+- 所有电脑都停用后，按 [CF 停用说明](DEPLOY.md#10-停用与数据清理)删除整个云端服务及相关存储。
 
 ## 常见问题
 
 | 现象 | 处理 |
 | --- | --- |
-| 找不到 Codex | 检查 PATH、CLI 安装位置，或在 TG 诊断中查看检测结果。 |
-| 已安装桌面端但配对提示未登录 | 在同一 macOS 用户下完成 Codex CLI 登录。 |
-| 配对失败 | 检查码是否过期、是否已使用、CF 地址是否可达。 |
-| 后台上线失败 | 查看 agent.log 和 launch-error.log，确认当前用户已登录桌面。 |
-| 自定义 Codex 路径 | 给 LaunchAgent 配置 ANYBOT_CODEX 环境变量指向实际可执行文件，再重新加载启动项。 |
-| 会话被占用 | 在桌面端释放对应会话，再让客户端重试，不删除写锁。 |
+| 想只输入 Token 和 ID | 使用 Bot“添加机器”提供的命令，CF 地址已预填。 |
+| 提示交互终端不可用 | 不使用 curl 管道执行脚本，按教程完整命令运行。 |
+| 绑定失败 | 核对自己的 CF 地址、Token、数字 ID，并先升级云端到 v0.2.0。 |
+| 已开桌面端但提示未登录 | 在同一 macOS 用户下完成 CLI 登录检查。 |
+| 找不到 Codex | 检查 CLI 安装路径；自定义路径可给登录启动项配置 ANYBOT_CODEX。 |
+| 后台未确认上线 | 查看打印出的日志及 launch-error.log，检查网络和登录状态。 |
+| 卸载拒绝目录 | 确认从安装目录运行，ownership.json 未被移动或修改，不扩大删除范围。 |
 
 更多见 [问题排查](TESTING.md)。

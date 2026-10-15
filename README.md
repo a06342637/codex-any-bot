@@ -1,81 +1,92 @@
 # codex-any-bot
 
-**一个 Telegram Bot 管理多台 Windows / Mac：后台上线、设备改名、选择会话、定时开始停止，分别设置保持分钟数和发送“在”的间隔。**
+**一个 Telegram Bot 控制多台 Windows / Mac。电脑运行安装命令，输入 Bot Token 和你的数字 ID，即可后台上线；以后在 TG 改名、选会话、设置保持时间、一键停止或更新。**
 
-当前教程对应 **v0.1.1，通过 Cloudflare（CF）部署**。客户端支持 Windows x64 / ARM64、Mac Intel / Apple Silicon。
+当前版本 **v0.2.0**，使用 Cloudflare（CF）分发服务，支持 Windows x64 / ARM64、Mac Intel / Apple Silicon。
 
-## 先部署一次，再添加电脑
+## 第一次使用
 
-~~~text
-你的 Telegram Bot
-        ↕
-Cloudflare：保存设备信息、分发控制指令
-        ↕
-Windows 电脑 A / Mac 电脑 B / 其他已绑定电脑
-~~~
-
-**先用任意一台 Windows 或 Mac 部署 CF 服务，输入一次 Bot Token 和你的 Telegram 用户 ID。** 以后添加电脑，在同一个 Bot 中点“添加机器”，把生成的命令粘贴到那台电脑即可。
-
-CF 部署完成后，部署用的电脑可以关闭。受控电脑不必分别注册 CF、不必开放端口，也不必重复输入 Bot Token。Codex 任务仍在各台电脑本地执行。
-
-| 你现在要做什么 | 从这里开始 |
-| --- | --- |
-| 第一次使用，准备 CF、Bot 和部署服务 | **[Cloudflare 完整部署教程](docs/DEPLOY.md)** |
-| 接入 Windows，查看日志、更新、卸载 | **[Windows 完整使用教程（CMD）](docs/WINDOWS.md)** |
-| 接入 Mac，查看日志、更新、卸载 | **[Mac 完整使用教程（终端）](docs/MACOS.md)** |
-| 设备已上线，学习控制按钮 | **[Telegram 操作教程](docs/TELEGRAM.md)** |
-| 安装失败、机器人无响应或设备离线 | [常见问题与检查方法](docs/TESTING.md) |
-
-## 使用顺序
-
-1. 准备 Cloudflare 账号、Telegram Bot 和自己的数字用户 ID。
-2. 按 [CF 教程](docs/DEPLOY.md)运行部署向导，上传云端代码、配置密钥并连接 Telegram。
-3. 向自己的 Bot 发送 /start，点击“添加机器”。
-4. 在目标电脑执行一次性命令：Windows 使用 **CMD**，Mac 使用 **终端**。
-5. 安装完成后关闭窗口，电脑后台上线待命。去 TG 重命名、选择会话、设置时间，再点“开始”。
-
-配对命令十分钟有效，只能使用一次。第二台电脑需要生成另一条命令。安装包包含客户端运行依赖；**每台受控电脑仍需可用并已登录的 Codex CLI**。
-
-当前 Windows 配对命令包含嵌套 PowerShell 代码，直接粘贴到 PowerShell 可能提前展开变量；请按 Windows 教程在 CMD 中执行。
-
-## 每台机器分别控制
+CF 服务只部署一次。Bot Token 和用户 ID 先配置到自己的 CF 服务；电脑安装时输入相同信息进行绑定校验。**Token 不保存在电脑上，客户端保存的是独立设备凭据。**
 
 ~~~text
-家里 Windows：保持 30 分钟，发送间隔 1 分钟
-办公室 Mac：保持 120 分钟，发送间隔 5 分钟
-
-选择机器 → 选择会话 / 新建并开始
-        → 保持时长 / 发送间隔
-        → 开始 / 立即停止
+你的 Telegram Bot ↔ 你的 CF 服务 ↔ Windows 电脑 A / Mac 电脑 B
 ~~~
 
-| 功能 | 当前行为 |
+| 步骤 | 教程 |
 | --- | --- |
-| 保持时长 | 首次明确成功后开始计算；到期停止当前执行和后续轮次。支持整数分钟或不限时。 |
-| 发送间隔 | 每轮结束后等待指定整数分钟，再发送“在”。默认 1 分钟，不重叠运行。 |
-| 修改参数 | 保存为该机器的默认值并应用到在线客户端；离线机器重连后同步。 |
-| 设备管理 | 查看在线状态、重命名、移除绑定。 |
-| 会话管理 | 分页选择已有会话，查看目录与更新时间，选择目录新建会话。 |
-| 定时与批量 | 定时开始/停止、每天执行、多机批量开始/停止及修改时间参数。 |
-| 一键更新 | TG“机器设置 → 更新客户端”升级电脑端，无需在电脑重新输入安装命令。 |
+| 1. 注册 CF、配置 Bot，部署服务一次 | [CF 完整部署教程](docs/DEPLOY.md) |
+| 2. Windows 运行命令，输入信息并后台上线 | [Windows 完整教程](docs/WINDOWS.md) |
+| 2. Mac 运行命令，输入信息并后台上线 | [Mac 完整教程](docs/MACOS.md) |
+| 3. 在同一个 Bot 管理所有机器 | [TG 操作教程](docs/TELEGRAM.md) |
+| 遇到错误、无法上线或升级问题 | [问题排查](docs/TESTING.md) |
 
-**电脑端更新与 CF 云端更新是两件事。** TG 按钮更新客户端；云端代码有变化时，需要按 CF 教程单独部署一次。
+部署完成后，部署电脑可以关闭。CF 不运行 Codex 任务，任务仍在各台电脑本地执行。每台电脑需要可用并已登录的 Codex CLI；本程序安装包包含自身运行依赖。
 
-## 后台运行、日志与卸载
+## 电脑一键安装
 
-- Windows 登录启动任务：codex-any-bot；Mac 登录启动项：com.codex-any-bot.agent。
-- 关闭命令窗口不影响客户端；自启动指当前用户登录后启动。关机、休眠或退出登录时不保证继续运行。
-- Windows 日志：%LOCALAPPDATA%\codex-any-bot\agent.log。
-- Mac 日志：~/Library/Application Support/codex-any-bot/agent.log。
-- 首次安装、重新登录、客户端重启或更新后均先待命，不自动开始挤。
+### Windows：在 CMD 运行
 
-各系统教程提供打印日志路径、打开目录、查看状态和卸载验证的命令。**v0.1.1 的卸载选项删除本机安装目录、配置、日志和自启动项；临时文件与云端绑定还需另行清理，不能把一条卸载命令等同于自动零残留。**
+~~~bat
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.0/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
+~~~
 
-## 版本与更多资料
+### Mac：在终端运行
 
-- [下载最新正式版安装包](https://github.com/a06342637/codex-any-bot/releases/latest)
-- [版本更新与升级说明](CHANGELOG.md)
-- [协议与任务规则](docs/ARCHITECTURE.md)
+~~~bash
+(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.0/install.sh' -o "$p" && bash "$p")
+~~~
+
+运行后依次填写：
+
+1. **自己的 CF HTTPS 地址**，例如自己部署的 workers.dev 根地址。
+2. **Bot Token**，隐藏输入，只用于本次绑定。
+3. **你的 Telegram 数字用户 ID**，与云端允许的用户 ID 一致。
+
+也可以在 Bot 中点“添加机器”取得已预填 CF 地址的命令，这样电脑端只询问 Token 和 ID。命令可用于多台电脑，每次都会分配独立设备身份。不要把安装脚本通过管道直接交给 bash，否则交互输入可能不可用。
+
+## 安装后会看到什么
+
+安装器打印：
+
+~~~text
+Online in Telegram. Waiting for your commands.
+Install directory: 本机安装目录
+Log: 本机日志文件
+Config (private): 本机设备配置
+Status: 本机状态查看命令
+Uninstall: 本机完整卸载命令
+~~~
+
+如果网络暂时不可用，会明确显示“已安装，尚未确认上线”，不会把安装成功误报为已上线。查看打印出的日志位置，再在 TG 刷新设备列表。
+
+确认上线后即可关闭 CMD / 终端。客户端后台运行，当前用户以后登录系统时自动启动；关机、休眠或退出登录期间不保证运行。首次安装、重启或更新后先待命，不自动开始挤。
+
+## TG 能控制什么
+
+- 查看设备在线状态与客户端版本，重命名、移除设备。
+- 选择已有会话，或指定工作目录新建会话并开始。
+- 每台独立设置保持时长、发送间隔和发送内容。
+- 手动开始、立即停止、定时开始停止、批量操作。
+- 一键诊断、重启客户端、更新客户端，电脑不用重新输入命令。
+
+保持时长从首次明确成功开始计算，单位为分钟；到期结束当前执行和后续轮次。发送间隔从每轮结束后开始等待，不重叠执行。后续成功、失败和重连不会续期。
+
+## 日志、卸载和更新
+
+| 系统 | 日志位置 | 完整卸载 |
+| --- | --- | --- |
+| Windows | %LOCALAPPDATA%\codex-any-bot\agent.log | 安装器打印的 uninstall.ps1 -Purge 命令 |
+| Mac | ~/Library/Application Support/codex-any-bot/agent.log | 安装器打印的 uninstall.sh --purge 命令 |
+
+新版把安装和更新缓存放在程序目录中，结束时清理。完整卸载删除本机程序、旧版本、配置、日志、缓存和登录启动项，并清理能确认归属的旧版临时文件；联网时自动移除该设备的云端绑定和相关状态。网络不可用或文件被占用时会报告未完成的部分。
+
+手动下载的源码/安装包、TG 聊天历史属于用户资料，不自动删除；已有 Codex、Python、Node.js 和原项目文件也不属于本客户端的卸载范围。具体检查方法见各系统教程。
+
+**TG 的更新按钮更新电脑客户端，不更新 CF 云端代码。** 从 v0.1.x 升级时，先更新 CF 服务，再在 TG 更新客户端。以后常规客户端更新不再询问 Token 或 ID。
+
+- [版本与升级说明](CHANGELOG.md)
+- [正式安装包](https://github.com/a06342637/codex-any-bot/releases/latest)
+- [协议说明](docs/ARCHITECTURE.md)
 - [开发者检查](docs/TESTING.md#开发者检查)
 
-持续发送可能消耗 Codex 用量，不保证抢到或预留服务容量。CF 可先使用免费方案，仍受平台额度限制。本项目独立于原 codex-anycodex-any，不会修改或依赖原项目目录。
+持续发送可能消耗 Codex 用量，不保证抢到或预留服务容量。CF 可使用免费方案起步，仍受平台额度限制。本项目独立于原 codex-anycodex-any，不修改原项目目录。

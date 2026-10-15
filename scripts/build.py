@@ -12,10 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 windows = sys.platform == "win32"
 arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
-args = [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm", "--onedir", "--name", "codex-any-bot", "--paths", "agent"]
+args = [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm"]
 if windows:
-    args.append("--noconsole")
-args.append("agent/entrypoint.py")
+    args.append("packaging/windows.spec")
+else:
+    args += ["--onedir", "--name", "codex-any-bot", "--paths", "agent", "agent/entrypoint.py"]
 subprocess.run(args, check=True)
 folder = ROOT / "dist/codex-any-bot"
 for name in (["uninstall.ps1"] if windows else ["uninstall.sh"]):

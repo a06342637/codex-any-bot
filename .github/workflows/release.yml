@@ -30,6 +30,8 @@ jobs:
       - run: python scripts/build.py
       - name: Smoke test executable
         run: python scripts/smoke_frozen.py dist/codex-any-bot/codex-any-bot
+      - name: Verify install and complete local uninstall
+        run: python scripts/smoke_install.py
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}

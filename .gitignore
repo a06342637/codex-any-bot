@@ -9,6 +9,7 @@ node_modules/
 dist/
 build/
 *.spec
+!packaging/windows.spec
 .env*
 .dev.vars*
 !.dev.vars.example

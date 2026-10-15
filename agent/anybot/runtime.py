@@ -73,6 +73,7 @@ class Agent:
 
     def snapshot(self):
         return {"event": "status", "version": self.version, "boot_id": self.boot_id,
+                "connected": self.connected, "synced": self.synced,
                 "agent_version": __version__, "settings": self.settings.json(),
                 "task": self.task.json() if self.task else None, "time": self.clock()}
 
@@ -255,6 +256,7 @@ class Agent:
                 if value.get("desired") == "stopped":
                     self.stop("已同步停止状态")
                 self.synced = True
+                self.publish()
         elif kind == "result":
             self.acknowledge(*value)
         elif kind in ("progress", "finished"):
