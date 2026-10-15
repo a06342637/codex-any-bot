@@ -53,6 +53,7 @@ export interface Device {
   settings: Settings; version: number; desired: "running" | "stopped";
   seen: number; connection?: string; boot_id?: string; state?: any;
   card_id?: number; card_text?: string; notice_key?: string; offline_notified?: boolean;
+  run_command_id?: string;
 }
 export interface Command { type: "command"; protocol: 1; id: string; device_id: string; version: number; action: string; payload: any; expires_at: number; result?: any }
 export interface Schedule { id: string; device_id: string; action: "start" | "stop"; kind: "once" | "daily"; due: number; time?: string }

@@ -1,4 +1,4 @@
-param([string]$Server, [string]$Code, [switch]$Update, [string]$Version = 'v0.2.3', [switch]$NoAutoStart, [switch]$NoLaunch)
+param([string]$Server, [string]$Code, [switch]$Update, [string]$Version = 'v0.2.4', [switch]$NoAutoStart, [switch]$NoLaunch)
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force

@@ -221,3 +221,29 @@ def test_agent_startup_cannot_recreate_a_directory_removed_by_uninstall(tmp_path
     with pytest.raises(FileNotFoundError):
         Agent({"device_id": "device1"}, root=missing)
     assert not missing.exists()
+
+
+def test_attempt_and_retry_counters_survive_a_success_without_extending_deadline(agent):
+    kinds = iter(["failed", "failed", "success", "success"])
+    agent.turn_runner = lambda *args: {"kind": next(kinds), "thread_id": "thread1"}
+    agent.command(command(agent, "start", {"settings": {"hold_minutes": 10}}))
+    for attempt in range(1, 5):
+        agent.current[0] = max(agent.current[0], agent.task.next_at)
+        agent.tick()
+        drain(agent)
+        assert agent.task.attempts == attempt
+    assert agent.task.retry_count == 2
+    assert agent.task.rounds == 2 and agent.task.failures == 0
+    assert agent.task.reason == ""
+    assert agent.task.first_success_at == 1015
+    assert agent.task.deadline == 1615
+
+
+def test_running_status_is_published_every_five_seconds(agent):
+    agent.task = Task("job", 1, Settings(), phase="running", attempts=3, retry_count=2)
+    agent.publish()
+    agent.current[0] += 5
+    agent.tick()
+    state = agent.store.get("last_state")
+    assert state["time"] == 1005
+    assert state["task"]["attempts"] == 3 and state["task"]["retry_count"] == 2

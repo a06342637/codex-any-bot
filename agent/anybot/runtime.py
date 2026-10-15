@@ -195,6 +195,11 @@ class Agent:
                 return
             if now >= task.next_at:
                 self.cancel = threading.Event()
+                if task.phase == "retrying":
+                    task.retry_count += 1
+                task.attempts += 1
+                task.attempt_started_at = now
+                task.reason = ""
                 task.phase = "running"
                 run_id = task.id
                 settings = Settings.parse(task.settings.json())
@@ -211,7 +216,8 @@ class Agent:
                 self.worker = threading.Thread(target=execute, daemon=True)
                 self.worker.start()
                 self.publish()
-        if now - self.last_status >= 30:
+        interval = 5 if task and task.phase not in ("stopped", "paused") else 30
+        if now - self.last_status >= interval:
             self.publish()
 
     def event(self, kind, value):

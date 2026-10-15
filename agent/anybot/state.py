@@ -43,6 +43,9 @@ class Task:
     retry_at: float | None = None
     failures: int = 0
     rounds: int = 0
+    attempts: int = 0
+    retry_count: int = 0
+    attempt_started_at: float | None = None
     phase: str = "waiting"
     reason: str = ""
 
@@ -76,6 +79,7 @@ class Task:
             self.failures = 0
             self.retry_at = None
             self.phase = "holding"
+            self.reason = ""
         elif kind in ("auth", "permission", "archived", "unknown_session"):
             self.phase = "paused"
             self.reason = kind

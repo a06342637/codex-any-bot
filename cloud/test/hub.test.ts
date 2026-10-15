@@ -208,7 +208,106 @@ describe("real SQLite-backed Durable Object", () => {
       expect(instance.list("cmd:")).toHaveLength(0);
       expect(instance.get("batch")).toBeUndefined();
     });
-    expect(calls.some(c => c.url.endsWith("/editMessageReplyMarkup") && c.body.reply_markup.inline_keyboard[0][0].text === "机器管理")).toBe(true);
+    expect(calls.some(c => c.url.endsWith("/editMessageText") && c.body.message_id === 999 && c.body.text.startsWith("机器管理"))).toBe(true);
+  });
+  it("opens the control page in the exact old message the user clicked", async () => {
+    await seed();
+    await runInDurableObject(hub(), (instance: BotHub) => instance.home());
+    await webhook({ update_id: 2111, callback_query: { id: "old-message", from: { id: 42 }, message: { message_id: 900, chat: { id: 42 } }, data: "d:machine1" } });
+    const edit = calls.filter(c => c.url.endsWith("/editMessageText")).at(-1);
+    expect(edit.body.message_id).toBe(900);
+    expect(edit.body.reply_markup.inline_keyboard.flat()).toContainEqual({ text: "重命名", callback_data: "rename:machine1" });
+    await runInDurableObject(hub(), (instance: BotHub) => {
+      expect(instance.get<any>("panel").message_id).toBe(900);
+    });
+  });
+  it("can repeatedly navigate between control and runtime pages in the clicked message", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.click("d:machine1", 900);
+      await instance.click("status:machine1", 900);
+      await instance.click("d:machine1", 900);
+      await instance.click("status:machine1", 900);
+      expect(instance.get<any>("panel").view).toBe("run");
+    });
+    const edits = calls.filter(c => c.url.endsWith("/editMessageText"));
+    expect(edits).toHaveLength(4);
+    expect(edits.every(c => c.body.message_id === 900)).toBe(true);
+    expect(edits.at(-1).body.reply_markup.inline_keyboard.flat().some((b: any) => b.text === "控制面板")).toBe(true);
+  });
+  it("updates each attempt in place and creates a new visible card for the next attempt", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1"); d.desired = "running";
+      d.state = { version: 0, time: 1000, task: { id: "job", phase: "running", attempts: 1, retry_count: 0, rounds: 0 } };
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      d.state.task.phase = "retrying"; d.state.task.failures = 1; d.state.task.reason = "failed";
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      await instance.runCard(d.id);
+      d.state.task.phase = "running"; d.state.task.attempts = 2; d.state.task.retry_count = 1;
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      d.state.task.phase = "holding"; d.state.task.rounds = 1; d.state.task.reason = "";
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+    });
+    expect(calls.filter(c => c.url.endsWith("/sendMessage"))).toHaveLength(2);
+    expect(calls.filter(c => c.url.endsWith("/editMessageText"))).toHaveLength(2);
+    const buttons = calls.at(-1).body.reply_markup.inline_keyboard.flat();
+    expect(buttons).toContainEqual({ text: "⏸ 停止", callback_data: "runstop:machine1:job" });
+    expect(buttons).toContainEqual({ text: "▶ 继续", callback_data: "runcontinue:machine1:job" });
+    expect(buttons).toContainEqual({ text: "控制面板", callback_data: "d:machine1" });
+    expect(buttons).toContainEqual({ text: "返回主页面", callback_data: "home" });
+  });
+  it("does not overwrite a status card that the user has turned into a menu", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1"); d.desired = "running";
+      d.state = { version: 0, time: 1000, task: { id: "job", phase: "running", attempts: 1 } };
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      const messageId = instance.get<any>("run:machine1").message_id;
+      await instance.click("home", messageId);
+      d.state.time = 1005;
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      expect(instance.get<any>("panel").view).toBe("machines");
+      d.state.task.attempts = 2;
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      expect(instance.get<any>("run:machine1").message_id).not.toBe(messageId);
+      expect(instance.get<any>("panel").message_id).toBe(messageId);
+    });
+    expect(calls.filter(c => c.url.endsWith("/sendMessage"))).toHaveLength(2);
+    expect(calls.filter(c => c.url.endsWith("/editMessageText"))).toHaveLength(1);
+  });
+  it("continues a stopped task in its selected session and ignores stale task buttons", async () => {
+    await seed();
+    const response = await SELF.fetch("https://relay.example.com/v1/connect", { headers: { Upgrade: "websocket", "X-Device-ID": "machine1", Authorization: "Bearer secret-machine1" } });
+    const ws = response.webSocket!; ws.accept();
+    try {
+      await runInDurableObject(hub(), async (instance: BotHub) => {
+        const d = instance.device("machine1");
+        d.settings.thread_id = "selected-session";
+        instance.put("d:machine1", d);
+        const first = await instance.issue(d.id, "start", {});
+        await instance.click(`runcontinue:${d.id}:${first.id}`);
+        expect(instance.list("cmd:machine1:")).toHaveLength(1);
+        await instance.issue(d.id, "stop", {});
+        const stopped = instance.device(d.id);
+        stopped.state = { version: stopped.version, task: { id: first.id, phase: "stopped", attempts: 1 } };
+        instance.put("d:machine1", stopped);
+        await instance.click(`runcontinue:${d.id}:${first.id}`);
+        const current = instance.device(d.id);
+        expect(current.run_command_id).not.toBe(first.id);
+        expect(current.settings.thread_id).toBe("selected-session");
+        await instance.click(`runcontinue:${d.id}:${first.id}`);
+        await instance.click(`runstop:${d.id}:${first.id}`);
+        expect(instance.list("cmd:machine1:")).toHaveLength(3);
+      });
+    } finally { ws.close(); }
   });
   it("keeps other machines and status heartbeats from taking over navigation", async () => {
     await seed("a"); await seed("b");
