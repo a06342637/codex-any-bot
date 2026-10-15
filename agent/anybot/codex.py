@@ -14,6 +14,28 @@ from pathlib import Path
 from . import __version__
 
 
+def group_has_live_members(group_id: int) -> bool:
+    # Darwin can report EPERM when a process group contains only exited/zombie members.
+    # Inspect only IDs and states, never command lines or environment variables.
+    result = subprocess.run(["ps", "-axo", "pid=,pgid=,stat="], capture_output=True,
+                            text=True, timeout=3, check=True)
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and fields[1] == str(group_id) and not fields[2].startswith("Z"):
+            return True
+    return False
+
+
+def signal_group(group_id: int, sig: int):
+    try:
+        os.killpg(group_id, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        if group_has_live_members(group_id):
+            raise
+
+
 def find_codex() -> str:
     candidates = [os.environ.get("ANYBOT_CODEX")]
     candidates += [shutil.which("codex"), shutil.which("codex.exe")]
@@ -79,12 +101,12 @@ class ProcessTree:
                                capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=15)
         else:
             try:
-                os.killpg(self.proc.pid, signal.SIGTERM)
+                signal_group(self.proc.pid, signal.SIGTERM)
                 self.proc.wait(timeout=2)
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 pass
             try:
-                os.killpg(self.proc.pid, signal.SIGKILL)
+                signal_group(self.proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
         try:
