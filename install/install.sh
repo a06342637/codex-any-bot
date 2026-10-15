@@ -74,23 +74,25 @@ else
   "$exe" "${args[@]}"
 fi
 if [ -f "$root/current.json" ]; then cp "$root/current.json" "$root/previous.json"; fi
-/usr/bin/plutil -create json "$stage/current.json"
-/usr/bin/plutil -insert executable -string "$exe" "$stage/current.json"
-/usr/bin/plutil -insert version -string "$version" "$stage/current.json"
+/usr/bin/plutil -create xml1 "$stage/current.plist"
+/usr/bin/plutil -insert executable -string "$exe" "$stage/current.plist"
+/usr/bin/plutil -insert version -string "$version" "$stage/current.plist"
+/usr/bin/plutil -convert json -o "$stage/current.json" "$stage/current.plist"
 label='com.codex-any-bot.agent'
 plist="$HOME/Library/LaunchAgents/$label.plist"
+/usr/bin/plutil -create xml1 "$stage/agent.plist"
+/usr/bin/plutil -insert Label -string "$label" "$stage/agent.plist"
+/usr/bin/plutil -insert ProgramArguments -json '[]' "$stage/agent.plist"
+/usr/bin/plutil -insert ProgramArguments.0 -string "$exe" "$stage/agent.plist"
+/usr/bin/plutil -insert ProgramArguments.1 -string run "$stage/agent.plist"
+/usr/bin/plutil -insert RunAtLoad -bool YES "$stage/agent.plist"
+/usr/bin/plutil -insert KeepAlive -bool NO "$stage/agent.plist"
+/usr/bin/plutil -insert WorkingDirectory -string "$root" "$stage/agent.plist"
+/usr/bin/plutil -insert StandardErrorPath -string "$root/launch-error.log" "$stage/agent.plist"
+/usr/bin/plutil -insert StandardOutPath -string "$root/launch-output.log" "$stage/agent.plist"
+/usr/bin/plutil -lint "$stage/agent.plist" >/dev/null
 if [ "$autostart" = 1 ]; then
   mkdir -p "$HOME/Library/LaunchAgents"
-  /usr/bin/plutil -create xml1 "$stage/agent.plist"
-  /usr/bin/plutil -insert Label -string "$label" "$stage/agent.plist"
-  /usr/bin/plutil -insert ProgramArguments -json '[]' "$stage/agent.plist"
-  /usr/bin/plutil -insert ProgramArguments.0 -string "$exe" "$stage/agent.plist"
-  /usr/bin/plutil -insert ProgramArguments.1 -string run "$stage/agent.plist"
-  /usr/bin/plutil -insert RunAtLoad -bool YES "$stage/agent.plist"
-  /usr/bin/plutil -insert KeepAlive -bool NO "$stage/agent.plist"
-  /usr/bin/plutil -insert WorkingDirectory -string "$root" "$stage/agent.plist"
-  /usr/bin/plutil -insert StandardErrorPath -string "$root/launch-error.log" "$stage/agent.plist"
-  /usr/bin/plutil -insert StandardOutPath -string "$root/launch-output.log" "$stage/agent.plist"
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
   cp "$stage/agent.plist" "$plist"
 fi
