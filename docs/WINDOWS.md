@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [先部署 CF](DEPLOY.md) · [TG 操作](TELEGRAM.md) · [问题排查](TESTING.md)
 
-适用于 v0.2.0、Windows x64 / ARM64。下面命令均在 **CMD（命令提示符）** 执行。
+适用于 v0.2.1、Windows x64 / ARM64。下面命令均在 **CMD（命令提示符）** 执行。
 
 ## 1. 准备好 CF 与 Codex
 
@@ -41,7 +41,7 @@ cd /d "%USERPROFILE%\Documents"
 运行下面完整一行：
 
 ~~~bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.0/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.1/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
 ~~~
 
 另一种方式：在自己的 Bot 点“添加机器”，复制它给出的 Windows 命令。该命令已包含你的 CF 地址，后面不用再填地址。
@@ -186,6 +186,7 @@ schtasks /Query /TN "codex-any-bot"
 | Already installed | 更新在 TG 操作；重新绑定先完整卸载。 |
 | 未确认上线 | 查看安装器打印的日志，检查 CF HTTPS/WSS 与网络。 |
 | 找不到卸载脚本 | 确认安装目录和版本；不要从源码目录直接运行卸载脚本。 |
-| 卸载拒绝路径 | 目录或 ownership.json 被移动/修改，先确认路径，不要扩大删除范围。 |
+| 目录归属无法验证 | 未知非空目录或残缺旧版配置不会被自动接管；先备份确认，再处理原目录。完整旧版可用更新方式升级。 |
+| 卸载拒绝路径 | 配置、版本目录或文件存在链接，或 ownership.json 被移动/修改；先确认路径，不要扩大删除范围。 |
 
 更多见 [问题排查](TESTING.md)。

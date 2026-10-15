@@ -76,3 +76,21 @@ def test_forget_only_uses_per_device_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "fetch", lambda *args: calls.append(args) or b'{"removed":true}')
     cli.forget(tmp_path)
     assert calls[0] == ("https://relay.example.com/v1/unenroll", {}, {"Authorization": "Bearer device-token", "X-Device-ID": "d1"})
+
+
+def test_stop_local_invalidates_previous_online_status(tmp_path):
+    store = Store(tmp_path)
+    store.put("last_state", {"connected": True, "synced": True, "time": cli.time.time()})
+    store.close()
+    cli.stop_local(tmp_path)
+    store = Store(tmp_path)
+    state = store.get("last_state")
+    store.close()
+    assert not state["connected"] and not state["synced"]
+
+
+def test_background_run_after_uninstall_does_not_recreate_data(tmp_path, monkeypatch):
+    missing = tmp_path / "codex-any-bot"
+    monkeypatch.setattr(cli, "data_dir", lambda: missing)
+    assert cli.main(["run"]) == 0
+    assert not missing.exists()

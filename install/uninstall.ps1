@@ -8,10 +8,20 @@ $root = [IO.Path]::GetFullPath($PSScriptRoot)
 $expected = if ($env:ANYBOT_DATA_DIR) { [IO.Path]::GetFullPath($env:ANYBOT_DATA_DIR) } else { [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'codex-any-bot')) }
 if ($root -ne $expected -or (Split-Path $root -Leaf) -ne 'codex-any-bot') { throw 'Unexpected installation path. Run the installed uninstaller.' }
 if ((Get-Item -LiteralPath $root).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Refusing a linked installation directory.' }
+function Assert-AppPath([string]$Value) {
+    $cursor = [IO.Path]::GetFullPath($Value)
+    if (-not $cursor.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Path escapes the installation directory.' }
+    while ($cursor -ne $root) {
+        $entry = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+        if ($entry -and ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Refusing a linked application path.' }
+        $cursor = Split-Path $cursor -Parent
+    }
+}
+foreach ($relative in @('ownership.json', 'config.json', 'current.json', 'previous.json', 'cache', 'versions')) { Assert-AppPath (Join-Path $root $relative) }
 $marker = Join-Path $root 'ownership.json'
 if (-not (Test-Path -LiteralPath $marker)) { throw 'Ownership marker missing. Update the client before using this uninstaller.' }
 $ownership = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
-if ($ownership.app -ne 'codex-any-bot') { throw 'Invalid ownership marker' }
+if ($ownership.app -ne 'codex-any-bot' -or $ownership.schema -ne 1 -or $ownership.autostart -isnot [bool]) { throw 'Invalid ownership marker' }
 $helper = $null
 $pointer = Join-Path $root 'current.json'
 if (Test-Path -LiteralPath $pointer) {
@@ -25,6 +35,7 @@ if (-not $helper -or -not (Test-Path -LiteralPath $helper)) {
 if ($helper) {
     $helper = [IO.Path]::GetFullPath($helper)
     if (-not $helper.StartsWith($root + '\versions\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected helper path' }
+    Assert-AppPath $helper
     & $helper stop-local
     if ($LASTEXITCODE -ne 0) { throw 'Client has not stopped. Wait for any update to finish, then retry.' }
 }

@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [先部署 CF](DEPLOY.md) · [TG 操作](TELEGRAM.md) · [问题排查](TESTING.md)
 
-适用于 v0.2.0、Mac Apple Silicon / Intel。以下命令在 macOS 的“终端”执行。
+适用于 v0.2.1、Mac Apple Silicon / Intel。以下命令在 macOS 的“终端”执行。
 
 ## 1. 准备 CF 和 Codex
 
@@ -41,7 +41,7 @@ cd "$HOME/Documents"
 运行下面完整一行：
 
 ~~~bash
-(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.0/install.sh' -o "$p" && bash "$p")
+(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.1/install.sh' -o "$p" && bash "$p")
 ~~~
 
 也可以去 Bot 点击“添加机器”，使用它给出的 Mac 命令；该命令已预填自己的 CF 地址。
@@ -181,6 +181,7 @@ launchctl print "gui/$(id -u)/com.codex-any-bot.agent"
 | 已开桌面端但提示未登录 | 在同一 macOS 用户下完成 CLI 登录检查。 |
 | 找不到 Codex | 检查 CLI 安装路径；自定义路径可给登录启动项配置 ANYBOT_CODEX。 |
 | 后台未确认上线 | 查看打印出的日志及 launch-error.log，检查网络和登录状态。 |
-| 卸载拒绝目录 | 确认从安装目录运行，ownership.json 未被移动或修改，不扩大删除范围。 |
+| 目录归属无法验证 | 未知非空目录或残缺旧版配置会保留；先备份确认后处理，完整旧版可通过更新验证。 |
+| 卸载拒绝目录 | 确认从安装目录运行，标记、配置和程序路径没有被移动或替换成链接，不扩大删除范围。 |
 
 更多见 [问题排查](TESTING.md)。

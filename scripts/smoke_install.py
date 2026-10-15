@@ -31,12 +31,34 @@ def run(args, env, expected_success=True):
     return result.stdout
 
 
+def check_ownership_safety(command, env, base):
+    for label, owner in (("unowned", None), ("wrong-owner", {"app": "another-app", "schema": 1}),
+                         ("bad-marker", {"app": "codex-any-bot", "schema": 1})):
+        folder = base / label / "codex-any-bot"
+        folder.mkdir(parents=True)
+        (folder / "personal-notes.txt").write_text("must not be claimed", encoding="utf-8")
+        if owner:
+            (folder / "ownership.json").write_text(json.dumps(owner), encoding="utf-8")
+        before = {p.name: p.read_bytes() for p in folder.iterdir()}
+        run(command, {**env, "ANYBOT_DATA_DIR": str(folder), "ANYBOT_FIXTURE_FAIL": "1"}, expected_success=False)
+        assert {p.name: p.read_bytes() for p in folder.iterdir()} == before, "Installer claimed another directory"
+    folder = base / "owned-failed-update" / "codex-any-bot"
+    folder.mkdir(parents=True)
+    marker = folder / "ownership.json"
+    original = json.dumps({"app": "codex-any-bot", "schema": 1, "autostart": True}).encode()
+    marker.write_bytes(original)
+    run(command, {**env, "ANYBOT_DATA_DIR": str(folder), "ANYBOT_FIXTURE_FAIL": "1"}, expected_success=False)
+    assert marker.read_bytes() == original, "Failed update changed existing ownership/autostart metadata"
+    print("PASS: unknown directories refused and failed-update metadata preserved.")
+
+
 def main():
     (ROOT / ".local").mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="installer-test-", dir=ROOT / ".local") as directory:
         base = Path(directory).resolve()
         root = base / "codex-any-bot"
         root.mkdir()
+        (root / "ownership.json").write_text(json.dumps({"app": "codex-any-bot", "schema": 1, "autostart": False}), encoding="utf-8")
         legacy = base / "legacy-temp"
         legacy.mkdir()
         owned = legacy / ("codex-any-bot-" + "a" * 32)
@@ -66,6 +88,7 @@ function Invoke-RestMethod { param($Uri) if ($env:ANYBOT_FIXTURE_FAIL) { throw '
 function Invoke-WebRequest { param($Uri, $OutFile, [switch]$UseBasicParsing) Copy-Item -LiteralPath $env:ANYBOT_FIXTURE_ARCHIVE -Destination $OutFile }
 """ + "& " + ps_quote(ROOT / "install/install.ps1") + " -Update -NoAutoStart -NoLaunch\n", encoding="utf-8")
             command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver)]
+            check_ownership_safety(command, env, base)
             run(command, failed_env, expected_success=False)
             assert not failed_root.exists(), "Failed download left a fresh installation directory"
             output = run(command, env)
@@ -83,6 +106,7 @@ shutil.copyfile(source, destination)
             env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
             failed_env["PATH"] = env["PATH"]
             command = ["bash", str(ROOT / "install/install.sh"), "--update", "--no-autostart", "--no-launch"]
+            check_ownership_safety(command, env, base)
             run(command, failed_env, expected_success=False)
             assert not failed_root.exists(), "Failed download left a fresh installation directory"
             output = run(command, env)
@@ -99,6 +123,9 @@ shutil.copyfile(source, destination)
             assert __version__ in run([pointer["executable"], "--version"], env)
             output = run(["bash", str(root / "uninstall.sh"), "--purge"], env)
         assert not root.exists(), "Uninstaller left application files"
+        background = ROOT / "dist/codex-any-bot" / ("codex-any-bot.exe" if sys.platform == "win32" else "codex-any-bot")
+        run([str(background), "run"], env)
+        assert not root.exists(), "A late background start recreated the uninstalled directory"
         assert not owned.exists(), "Identified old cache remains"
         assert sentinel.read_text() == "must remain", "Uninstaller touched unrelated data"
         assert "Cloud binding could not be removed" in output or sys.platform == "darwin"

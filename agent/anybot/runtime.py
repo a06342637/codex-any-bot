@@ -21,7 +21,7 @@ class Agent:
     def __init__(self, config: dict, root=None, turn_runner=run_turn, clock=time.time):
         self.config = config
         self.root = root or data_dir()
-        self.store = Store(self.root)
+        self.store = Store(self.root, create_directory=False)
         self.store.bind_device(config["device_id"])
         self.clock = clock
         self.turn_runner = turn_runner
@@ -327,6 +327,8 @@ class Agent:
                 self.tick()
         finally:
             self.shutdown.set()
+            self.connected = False
+            self.synced = False
             self.stop("客户端退出")
             if self.worker:
                 self.worker.join(timeout=20)

@@ -7,6 +7,9 @@ expected="${ANYBOT_DATA_DIR:-$HOME/Library/Application Support/codex-any-bot}"
 [[ "$expected" = /* && "$(basename "$root")" = codex-any-bot && ! -L "$expected" ]] || { echo 'Unexpected installation directory' >&2; exit 1; }
 expected=$(cd "$expected" && pwd -P)
 [ "$root" = "$expected" ] || { echo 'Run the installed uninstaller' >&2; exit 1; }
+for relative in ownership.json config.json current.json previous.json cache versions; do
+  [ ! -L "$root/$relative" ] || { echo 'Refusing a linked application path' >&2; exit 1; }
+done
 marker="$root/ownership.json"
 [ "$(/usr/bin/plutil -extract app raw -o - "$marker")" = codex-any-bot ] || { echo 'Ownership marker missing' >&2; exit 1; }
 autostart=$(/usr/bin/plutil -extract autostart raw -o - "$marker")
@@ -19,6 +22,13 @@ if [ ! -x "$exe" ]; then
 fi
 if [ -x "$exe" ]; then
   case "$exe" in "$root"/versions/*/codex-any-bot) ;; *) echo 'Unexpected executable path' >&2; exit 1;; esac
+  exe_part="$exe"
+  while [ "$exe_part" != "$root" ]; do
+    [ ! -L "$exe_part" ] || { echo 'Linked executable refused' >&2; exit 1; }
+    exe_part=$(dirname "$exe_part")
+  done
+  exe_parent=$(cd "$(dirname "$exe")" && pwd -P)
+  case "$exe_parent" in "$root"/versions/*) ;; *) echo 'Executable escapes installation directory' >&2; exit 1;; esac
   "$exe" stop-local
 fi
 label='com.codex-any-bot.agent'

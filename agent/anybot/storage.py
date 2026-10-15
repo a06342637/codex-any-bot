@@ -27,8 +27,11 @@ def load_config(root: Path | None = None) -> dict:
 
 
 class Store:
-    def __init__(self, root: Path):
-        root.mkdir(parents=True, exist_ok=True)
+    def __init__(self, root: Path, *, create_directory: bool = True):
+        if create_directory:
+            root.mkdir(parents=True, exist_ok=True)
+        elif not root.is_dir():
+            raise FileNotFoundError(root)
         self.db = sqlite3.connect(root / "state.sqlite")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript("""

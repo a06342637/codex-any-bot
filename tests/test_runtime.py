@@ -214,3 +214,10 @@ def test_expiry_is_processed_while_sender_is_blocked(agent):
         agent.shutdown.set()
         release.set()
         sender.join(2)
+
+
+def test_agent_startup_cannot_recreate_a_directory_removed_by_uninstall(tmp_path):
+    missing = tmp_path / "codex-any-bot"
+    with pytest.raises(FileNotFoundError):
+        Agent({"device_id": "device1"}, root=missing)
+    assert not missing.exists()

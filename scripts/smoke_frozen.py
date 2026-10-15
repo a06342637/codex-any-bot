@@ -30,6 +30,7 @@ with tempfile.TemporaryDirectory(prefix="anybot-smoke-") as directory:
         with sqlite3.connect(root / "state.sqlite") as db:
             data = json.loads(db.execute("SELECT value FROM records WHERE key='last_state'").fetchone()[0])
             assert data["task"] is None
+            assert data["connected"] is False and data["synced"] is False
         db.close()
     finally:
         if proc.poll() is None:

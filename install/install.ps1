@@ -1,4 +1,4 @@
-param([string]$Server, [string]$Code, [switch]$Update, [string]$Version = 'v0.2.0', [switch]$NoAutoStart, [switch]$NoLaunch)
+param([string]$Server, [string]$Code, [switch]$Update, [string]$Version = 'v0.2.1', [switch]$NoAutoStart, [switch]$NoLaunch)
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force
@@ -10,13 +10,40 @@ $root = if ($env:ANYBOT_DATA_DIR) { $env:ANYBOT_DATA_DIR } else { Join-Path $env
 $root = [IO.Path]::GetFullPath($root)
 if ((Split-Path $root -Leaf) -ne 'codex-any-bot') { throw 'Installation directory must end in codex-any-bot.' }
 if ((Test-Path -LiteralPath $root) -and ((Get-Item -LiteralPath $root).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Refusing a linked installation directory.' }
+function Assert-AppPath([string]$Value) {
+    $cursor = [IO.Path]::GetFullPath($Value)
+    if (-not $cursor.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Path escapes the installation directory.' }
+    while ($cursor -ne $root) {
+        $entry = Get-Item -LiteralPath $cursor -Force -ErrorAction SilentlyContinue
+        if ($entry -and ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Refusing a linked application path.' }
+        $cursor = Split-Path $cursor -Parent
+    }
+}
+foreach ($relative in @('ownership.json', 'config.json', 'current.json', 'previous.json', 'cache', 'versions')) { Assert-AppPath (Join-Path $root $relative) }
+$marker = Join-Path $root 'ownership.json'
+$ownership = @{ app = 'codex-any-bot'; schema = 1; autostart = $false }
+if (Test-Path -LiteralPath $marker) {
+    $ownership = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json
+    if ($ownership.app -ne 'codex-any-bot' -or $ownership.schema -ne 1 -or $ownership.autostart -isnot [bool]) { throw 'Directory belongs to another application or has an invalid ownership marker.' }
+} elseif ((Test-Path -LiteralPath $root) -and @(Get-ChildItem -LiteralPath $root -Force).Count -gt 0) {
+    if (-not $Update) { throw 'Non-empty directory has no ownership marker; refusing to claim its files.' }
+    try {
+        $legacyConfig = Get-Content -LiteralPath (Join-Path $root 'config.json') -Raw | ConvertFrom-Json
+        $legacyPointer = Get-Content -LiteralPath (Join-Path $root 'current.json') -Raw | ConvertFrom-Json
+        if ($legacyConfig.protocol -ne 1 -or $legacyConfig.token -notmatch '^[a-f0-9]{64}$' -or $legacyConfig.device_id -notmatch '^[a-f0-9]{16}$' -or $legacyConfig.server -notmatch '^https://') { throw 'Invalid legacy config' }
+        $legacyExe = [IO.Path]::GetFullPath($legacyPointer.executable)
+        Assert-AppPath $legacyExe
+        if (-not $legacyExe.StartsWith($root + '\versions\', [StringComparison]::OrdinalIgnoreCase) -or (Split-Path $legacyExe -Leaf) -ne 'codex-any-bot.exe' -or -not (Test-Path -LiteralPath $legacyExe -PathType Leaf)) { throw 'Invalid legacy executable' }
+        $ownership.autostart = $true
+    } catch { throw 'Cannot verify ownership of this non-empty directory. Its files were not changed.' }
+}
 $taskName = 'codex-any-bot'
 $repo = 'https://github.com/a06342637/codex-any-bot/releases'
 if (-not $Update -and (Test-Path -LiteralPath (Join-Path $root 'config.json'))) { throw 'Already installed. Update from Telegram or run this installer with -Update.' }
 if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw 'Invalid release version' }
 $createdRoot = -not (Test-Path -LiteralPath $root)
 New-Item -ItemType Directory -Path $root -Force | Out-Null
-@{ app = 'codex-any-bot'; schema = 1; autostart = (-not $NoAutoStart.IsPresent) } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'ownership.json') -Encoding utf8
+if (-not (Test-Path -LiteralPath $marker)) { $ownership | ConvertTo-Json | Set-Content -LiteralPath $marker -Encoding utf8 }
 $cache = Join-Path $root 'cache'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null
 if ((Get-Item -LiteralPath $cache).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Refusing a linked cache directory.' }
@@ -66,8 +93,12 @@ try {
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+        $ownership.autostart = $true
     }
-    @{ executable = $exe; console_executable = $consoleExe; version = $Version } | ConvertTo-Json | Set-Content -LiteralPath $pointer -Encoding utf8
+    $ownership | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $staging 'ownership.json') -Encoding utf8
+    Move-Item -LiteralPath (Join-Path $staging 'ownership.json') -Destination $marker -Force
+    @{ executable = $exe; console_executable = $consoleExe; version = $Version } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $staging 'current.json') -Encoding utf8
+    Move-Item -LiteralPath (Join-Path $staging 'current.json') -Destination $pointer -Force
     Remove-Item -LiteralPath (Join-Path $root 'stop.request') -Force -ErrorAction SilentlyContinue
     if (-not $NoLaunch) {
         Start-Process -FilePath $exe -ArgumentList 'run' -WorkingDirectory $root -WindowStyle Hidden | Out-Null

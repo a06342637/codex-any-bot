@@ -169,6 +169,14 @@ def stop_local(root):
     while True:
         try:
             with single_instance(root):
+                if (root / "state.sqlite").exists():
+                    store = Store(root)
+                    try:
+                        state = store.get("last_state", {})
+                        state.update(connected=False, synced=False, time=time.time())
+                        store.put("last_state", state)
+                    finally:
+                        store.close()
                 return
         except OSError:
             if time.monotonic() >= until:
@@ -234,8 +242,17 @@ def main(argv=None):
     wait.add_argument("--timeout", type=int, default=20)
     args = parser.parse_args(argv)
     root = data_dir()
-    root.mkdir(parents=True, exist_ok=True)
-    handler = RotatingFileHandler(root / "agent.log", maxBytes=1024 * 1024, backupCount=3, encoding="utf-8")
+    if args.command == "run":
+        if not (root / "config.json").is_file() or (root / "stop.request").exists():
+            return 0
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+    try:
+        handler = RotatingFileHandler(root / "agent.log", maxBytes=1024 * 1024, backupCount=3, encoding="utf-8")
+    except FileNotFoundError:
+        if args.command == "run":
+            return 0  # Uninstall won the race; background startup must not recreate its data.
+        raise
     logging.basicConfig(level=logging.INFO, handlers=[handler], format="%(asctime)s %(levelname)s %(message)s")
     try:
         if args.command == "setup":
