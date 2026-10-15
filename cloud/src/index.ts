@@ -216,7 +216,7 @@ export class BotHub extends DurableObject<Env> {
           if (cmd.action === "start" && cmd.version === device.version) { device.desired = "stopped"; this.put("d:" + device.id, device); }
           await this.say(`${device.name}：${String(data.message || "操作失败").slice(0, 300)}`);
         } else if (data.sessions) await this.sessionList(device, data.sessions, data.cursor);
-        else if (data.diagnostics) await this.say(`${device.name} 诊断\nCodex：${data.diagnostics.version}\n登录：${data.diagnostics.logged_in ? "正常" : "需要登录"}\n路径：${data.diagnostics.codex}\n平台：${data.diagnostics.platform}`, undefined, true);
+        else if (data.diagnostics) await this.say(`${device.name} 诊断\nCodex：${data.diagnostics.version}\n登录：${data.diagnostics.auth_detail || (data.diagnostics.logged_in ? "正常" : "需要登录")}\n路径：${data.diagnostics.codex}\n平台：${data.diagnostics.platform}`, undefined, true);
       }
     } catch {
       // Do not log tokens, prompts, or transcript contents.

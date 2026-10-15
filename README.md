@@ -2,7 +2,7 @@
 
 **一个 Telegram Bot 控制多台 Windows / Mac。电脑运行安装命令，输入 Bot Token 和你的数字 ID，即可后台上线；以后在 TG 改名、选会话、设置保持时间、一键停止或更新。**
 
-当前版本 **v0.2.1**，使用 Cloudflare（CF）分发服务，支持 Windows x64 / ARM64、Mac Intel / Apple Silicon。
+当前版本 **v0.2.2**，使用 Cloudflare（CF）分发服务，支持 Windows x64 / ARM64、Mac Intel / Apple Silicon。
 
 ## 第一次使用
 
@@ -20,20 +20,20 @@ CF 服务只部署一次。Bot Token 和用户 ID 先配置到自己的 CF 服�
 | 3. 在同一个 Bot 管理所有机器 | [TG 操作教程](docs/TELEGRAM.md) |
 | 遇到错误、无法上线或升级问题 | [问题排查](docs/TESTING.md) |
 
-部署完成后，部署电脑可以关闭。CF 不运行 Codex 任务，任务仍在各台电脑本地执行。每台电脑需要可用并已登录的 Codex CLI；本程序安装包包含自身运行依赖。
+部署完成后，部署电脑可以关闭。CF 不运行 Codex 任务，任务仍在各台电脑本地执行。每台电脑需要可用的 Codex CLI（已登录 OpenAI，或已配置自定义模型服务）；本程序安装包包含自身运行依赖。
 
 ## 电脑一键安装
 
 ### Windows：在 CMD 运行
 
 ~~~bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.1/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.2/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
 ~~~
 
 ### Mac：在终端运行
 
 ~~~bash
-(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.1/install.sh' -o "$p" && bash "$p")
+(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.2/install.sh' -o "$p" && bash "$p")
 ~~~
 
 运行后依次填写：

@@ -2,20 +2,20 @@
 
 [返回首页](../README.md) · [先部署 CF](DEPLOY.md) · [TG 操作](TELEGRAM.md) · [问题排查](TESTING.md)
 
-适用于 v0.2.1、Windows x64 / ARM64。下面命令均在 **CMD（命令提示符）** 执行。
+适用于 v0.2.2、Windows x64 / ARM64。下面命令均在 **CMD（命令提示符）** 执行。
 
 ## 1. 准备好 CF 与 Codex
 
 先完成 [CF 部署](DEPLOY.md)。需要知道自己的 CF 根地址、Bot Token 和允许操作的数字用户 ID。不要填写别人的 CF 地址。
 
-这台电脑还需安装并登录 Codex CLI：
+这台电脑还需安装可用的 Codex CLI：
 
 ~~~bat
 codex --version
 codex login status
 ~~~
 
-未登录时：
+使用 OpenAI 账号且未登录时：
 
 ~~~bat
 codex login
@@ -30,6 +30,8 @@ codex login
 
 已有可用 CLI 不必重装。本客户端安装包包含自身 Python 运行环境，不需要为客户端另外安装 Python 或 Git。桌面端登录与 CLI 登录不一定相同，以实际检查结果为准。
 
+自定义模型服务：如果已在 Codex 的 config.toml 中配置自己的服务，且该服务不要求 OpenAI 登录，客户端会使用已有配置；即使 codex login status 显示未登录也能绑定，不必改动现有配置。诊断会显示认证方式；它不会发送模型请求来验证服务余额或连通性。服务使用 env_key 时，对应环境变量需对后台客户端可见。
+
 ## 2. 运行安装命令
 
 在 CMD 进入默认工作目录，例如：
@@ -41,7 +43,7 @@ cd /d "%USERPROFILE%\Documents"
 运行下面完整一行：
 
 ~~~bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.1/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.2/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
 ~~~
 
 另一种方式：在自己的 Bot 点“添加机器”，复制它给出的 Windows 命令。该命令已包含你的 CF 地址，后面不用再填地址。

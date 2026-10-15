@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from pathlib import Path
 
 from . import __version__
@@ -249,10 +250,36 @@ def rpc(method: str, params: dict, binary: str | None = None) -> dict:
         tree.close()
 
 
+def provider_auth_status(config_root: Path | None = None) -> dict:
+    root = config_root or Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    path = root / "config.toml"
+    config = tomllib.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
+    profile = config.get("profile")
+    if isinstance(profile, str):
+        config = {**config, **config.get("profiles", {}).get(profile, {})}
+    provider = config.get("model_provider", "openai")
+    options = config.get("model_providers", {}).get(provider, {})
+    custom = provider != "openai" and bool(options) and options.get("requires_openai_auth", False) is False
+    if custom:
+        env_key = options.get("env_key")
+        missing = isinstance(env_key, str) and not os.environ.get(env_key)
+        return {"provider": provider, "requires_openai_login": False, "ready": not missing,
+                "auth_detail": f"自定义服务缺少环境变量 {env_key}" if missing else "自定义服务（无需 OpenAI 登录；服务连通性尚未测试）"}
+    return {"provider": provider, "requires_openai_login": True}
+
+
 def diagnose() -> dict:
     binary = find_codex()
     kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
     version = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=15, **kwargs)
     auth = subprocess.run([binary, "login", "status"], capture_output=True, text=True, timeout=15, **kwargs)
+    logged_in = auth.returncode == 0
+    try:
+        provider = provider_auth_status()
+    except (OSError, ValueError, TypeError):
+        provider = {"requires_openai_login": True, "ready": False,
+                    "auth_detail": "无法读取 Codex 配置，请先修复配置文件"}
+    provider.setdefault("ready", logged_in)
+    provider.setdefault("auth_detail", "OpenAI 登录正常" if logged_in else "请先在本机运行 codex login 完成登录")
     return {"codex": binary, "version": version.stdout.strip()[:120],
-            "logged_in": auth.returncode == 0, "platform": sys.platform}
+            "logged_in": logged_in, "platform": sys.platform, **provider}

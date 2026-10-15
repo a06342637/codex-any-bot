@@ -1,4 +1,5 @@
 import json
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -94,3 +95,21 @@ def test_background_run_after_uninstall_does_not_recreate_data(tmp_path, monkeyp
     monkeypatch.setattr(cli, "data_dir", lambda: missing)
     assert cli.main(["run"]) == 0
     assert not missing.exists()
+
+
+def test_bind_accepts_configured_custom_auth_without_openai_login(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "diagnose", lambda: {"logged_in": False, "ready": True, "auth_detail": "custom"})
+    monkeypatch.setattr(cli, "fetch", lambda *args: json.dumps({"protocol": 1, "device_id": "custom-device", "token": "a" * 64}).encode())
+    cli.bind(tmp_path, "https://relay.example.com", "Machine", str(tmp_path), {"code": "test"})
+    assert load_config(tmp_path)["device_id"] == "custom-device"
+
+
+def test_diagnose_works_with_legacy_windows_output_encoding(tmp_path, monkeypatch):
+    output = io.BytesIO()
+    stream = io.TextIOWrapper(output, encoding="cp1252")
+    monkeypatch.setattr(cli.sys, "stdout", stream)
+    monkeypatch.setattr(cli, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli, "diagnose", lambda: {"ready": True, "auth_detail": "自定义服务"})
+    assert cli.main(["diagnose"]) == 0
+    stream.flush()
+    assert json.loads(output.getvalue())["auth_detail"] == "自定义服务"

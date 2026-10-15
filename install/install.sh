@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-server=''; code=''; update=0; version='v0.2.1'; autostart=1; launch=1
+server=''; code=''; update=0; version='v0.2.2'; autostart=1; launch=1
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --server) server="$2"; shift 2;;

@@ -129,8 +129,9 @@ def bind(root, server, name, cwd, credentials):
     directory = Path(cwd).expanduser().resolve()
     if not directory.is_dir():
         raise RuntimeError("工作目录不存在")
-    if not diagnose()["logged_in"]:
-        raise RuntimeError("请先在本机运行 codex login 完成登录")
+    diagnostic = diagnose()
+    if not diagnostic.get("ready", diagnostic.get("logged_in", False)):
+        raise RuntimeError(diagnostic.get("auth_detail") or "请先在本机运行 codex login 完成登录")
     try:
         result = json.loads(fetch(server + "/v1/enroll", {
             **credentials, "name": name, "platform": sys.platform, "cwd": str(directory),
@@ -226,6 +227,11 @@ def main(argv=None):
         except OSError:
             sys.stdout = open(os.devnull, "w")
             sys.stderr = open(os.devnull, "w")
+    # Legacy Windows consoles/pipes may not support Chinese output. Keep the
+    # selected encoding but escape unsupported characters instead of failing.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description="codex-any-bot 客户端")
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)

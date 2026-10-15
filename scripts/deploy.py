@@ -34,7 +34,7 @@ def main():
     payload = json.dumps({"BOT_TOKEN": token, "ALLOWED_USER_ID": user, "CHAT_ID": chat, "WEBHOOK_SECRET": secret})
     subprocess.run([npx, "wrangler", "secret", "bulk"], cwd=CLOUD, input=payload, text=True, check=True)
     body = json.dumps({"url": url + "/telegram/webhook", "secret_token": secret,
-                       "allowed_updates": ["message", "callback_query"], "drop_pending_updates": True}).encode()
+                       "allowed_updates": ["message", "callback_query"], "drop_pending_updates": False}).encode()
     request = urllib.request.Request(f"https://api.telegram.org/bot{token}/setWebhook", data=body, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:

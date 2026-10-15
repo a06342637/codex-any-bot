@@ -2,20 +2,20 @@
 
 [返回首页](../README.md) · [先部署 CF](DEPLOY.md) · [TG 操作](TELEGRAM.md) · [问题排查](TESTING.md)
 
-适用于 v0.2.1、Mac Apple Silicon / Intel。以下命令在 macOS 的“终端”执行。
+适用于 v0.2.2、Mac Apple Silicon / Intel。以下命令在 macOS 的“终端”执行。
 
 ## 1. 准备 CF 和 Codex
 
 先完成 [CF 部署](DEPLOY.md)，准备自己的 CF 根地址、Bot Token 和允许操作的数字用户 ID。
 
-这台 Mac 需要可用并已登录的 Codex CLI：
+这台 Mac 需要可用的 Codex CLI：
 
 ~~~bash
 codex --version
 codex login status
 ~~~
 
-未登录时：
+使用 OpenAI 账号且未登录时：
 
 ~~~bash
 codex login
@@ -30,6 +30,8 @@ codex login
 
 已有可用 CLI 不必重装。安装包包含本客户端运行依赖，不需要为本程序另装 Python 或 Git。
 
+自定义模型服务：如果已在 Codex 的 config.toml 中配置自己的服务，且该服务不要求 OpenAI 登录，客户端会使用已有配置；即使 codex login status 显示未登录也能绑定，不必改动现有配置。诊断会显示认证方式；它不会发送模型请求来验证服务余额或连通性。服务使用 env_key 时，对应环境变量需对后台客户端可见。
+
 ## 2. 运行一键安装命令
 
 先进入希望作为默认工作目录的位置：
@@ -41,7 +43,7 @@ cd "$HOME/Documents"
 运行下面完整一行：
 
 ~~~bash
-(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.1/install.sh' -o "$p" && bash "$p")
+(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.2/install.sh' -o "$p" && bash "$p")
 ~~~
 
 也可以去 Bot 点击“添加机器”，使用它给出的 Mac 命令；该命令已预填自己的 CF 地址。
