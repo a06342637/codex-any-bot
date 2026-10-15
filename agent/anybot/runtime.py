@@ -291,7 +291,8 @@ class Agent:
         while not self.shutdown.is_set():
             url = self.config["server"].replace("https://", "wss://", 1) + "/v1/connect"
             self.ws = websocket.WebSocketApp(url, header=["Authorization: Bearer " + self.config["token"],
-                                                         "X-Device-ID: " + self.config["device_id"]],
+                                                         "X-Device-ID: " + self.config["device_id"],
+                                                         "User-Agent: codex-any-bot/" + __version__],
                 on_open=lambda ws: self.events.put(("transport", (ws, "connected", None))),
                 on_message=lambda ws, msg: self._network_message(msg, ws),
                 on_error=lambda ws, err: self.events.put(("transport", (ws, "revoked", None))) if getattr(err, "status_code", None) in (401, 403) else None,

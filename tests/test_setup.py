@@ -63,6 +63,17 @@ def test_credential_requests_do_not_follow_redirects():
     assert cli.NoCredentialRedirect().redirect_request(None, None, 302, "redirect", {}, "https://other.example") is None
 
 
+def test_api_requests_identify_the_client_instead_of_python_urllib(tmp_path, monkeypatch):
+    requests = []
+    class Opener:
+        def open(self, request, timeout):
+            requests.append(request)
+            return io.BytesIO(b'{"ok":true}')
+    monkeypatch.setattr(cli.urllib.request, "build_opener", lambda *args: Opener())
+    cli.fetch("https://relay.example.com/v1/enroll", {"platform": "win32"})
+    assert requests[0].get_header("User-agent") == "codex-any-bot/" + cli.__version__
+
+
 def test_wait_online_requires_a_fresh_synced_status(tmp_path):
     store = Store(tmp_path)
     store.put("last_state", {"connected": True, "synced": True, "time": cli.time.time()})

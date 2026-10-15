@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [先部署 CF](DEPLOY.md) · [TG 操作](TELEGRAM.md) · [问题排查](TESTING.md)
 
-适用于 v0.2.2、Windows x64 / ARM64。下面命令均在 **CMD（命令提示符）** 执行。
+适用于 v0.2.3、Windows x64 / ARM64。下面命令均在 **CMD（命令提示符）** 执行。
 
 ## 1. 准备好 CF 与 Codex
 
@@ -43,7 +43,7 @@ cd /d "%USERPROFILE%\Documents"
 运行下面完整一行：
 
 ~~~bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.2/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.3/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
 ~~~
 
 另一种方式：在自己的 Bot 点“添加机器”，复制它给出的 Windows 命令。该命令已包含你的 CF 地址，后面不用再填地址。

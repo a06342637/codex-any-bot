@@ -37,7 +37,7 @@ class NoCredentialRedirect(urllib.request.HTTPRedirectHandler):
 
 def fetch(url, body=None, headers=None):
     request = urllib.request.Request(url, data=json.dumps(body).encode() if body is not None else None,
-                                     headers={"Content-Type": "application/json", **(headers or {})})
+                                     headers={"Content-Type": "application/json", "User-Agent": "codex-any-bot/" + __version__, **(headers or {})})
     context = ssl.create_default_context(cafile=certifi.where())
     context.load_default_certs()
     handlers = [urllib.request.HTTPSHandler(context=context)]
