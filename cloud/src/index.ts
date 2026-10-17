@@ -16,6 +16,10 @@ const button = (text: string, data: string) => ({ text, callback_data: data });
 type Rows = ReturnType<typeof button>[][];
 type Panel = { message_id: number; view: string; device_id?: string; signature: string };
 type RunCard = { message_id: number; task_id: string; attempt: number; signature: string };
+type DirectoryBrowser = { id: string; device_id: string; mode: "cwd" | "new"; expires: number };
+type DirectoryTarget = { path?: string; offset?: number; location?: "home" | "roots" };
+type DirectoryPage = { path: string | null; parent: string | null; entries: { name: string; path: string }[];
+  offset: number; previous_offset: number | null; next_offset: number | null; total: number; location: "roots" | null };
 const legacyBatchActions = new Set(["batch", "toggle", "batchstart", "batchstop", "batchhold", "batchinterval", "stopall"]);
 
 export default {
@@ -225,6 +229,13 @@ export class BotHub extends DurableObject<Env> {
         }
         cmd.result = data;
         this.put(key, cmd, now() + 7 * 86400);
+        if (cmd.action === "directories") {
+          const browser = this.get<DirectoryBrowser>("directory-browser");
+          if (browser && browser.id === cmd.payload.request_id && browser.device_id === device.id && browser.expires >= now()) {
+            await this.directoryPage(browser, data.ok ? data.directory : undefined, data.message);
+          }
+          return;
+        }
         if (cmd.action === "delete_session" && device.session_delete?.command_id === cmd.id) {
           delete device.session_delete;
           if (data.ok && data.deleted_thread_id === cmd.payload.thread_id) {
@@ -380,8 +391,9 @@ export class BotHub extends DurableObject<Env> {
     try { await work; }
     finally { if (this.runQueues.get(deviceId) === work) this.runQueues.delete(deviceId); }
   }
-  async renderPanel(view: string, deviceId: string | undefined, text: string, rows: Rows, background = false, fresh = false, anchor?: number) {
+  async renderPanel(view: string, deviceId: string | undefined, text: string, rows: Rows, background = false, fresh = false, anchor?: number, browserId?: string) {
     const work = (this.panelQueue ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      if (browserId && this.get<DirectoryBrowser>("directory-browser")?.id !== browserId) return;
       const previous = fresh ? undefined : this.get<Panel>("panel");
       // A status from another machine must never replace the panel being used.
       if (background && (previous?.view !== "device" || previous.device_id !== deviceId)) return;
@@ -402,6 +414,7 @@ export class BotHub extends DurableObject<Env> {
   }
   async home(fresh = false, messageId?: number) {
     this.del("input");
+    this.del("directory-browser");
     this.cancelDeletionConfirmation();
     this.del("batch");
     const devices = this.list<Device>("d:");
@@ -446,6 +459,62 @@ export class BotHub extends DurableObject<Env> {
     rows.push([button("新建并开始", "new:" + device.id), button("返回", "d:" + device.id)]);
     await this.say(`${device.name} 的会话\n${sessionLines(device.settings, "当前选择").join("\n")}\n选择后查看详情，再点开始。删除前需确认。`, rows, true);
   }
+  directoryToken(browser: DirectoryBrowser, target: DirectoryTarget = {}) {
+    const token = id();
+    this.put("directory:" + token, { ...browser, ...target }, browser.expires);
+    return token;
+  }
+  directoryControls(browser: DirectoryBrowser): Rows {
+    const device = this.device(browser.device_id);
+    return [
+      [button("用户主目录", "dirnav:" + this.directoryToken(browser, { location: "home" })),
+        button(device.platform === "win32" ? "切换盘符" : "根目录", "dirnav:" + this.directoryToken(browser, { location: "roots" }))],
+      [button("手动输入路径", `cwdmanual:${device.id}:${browser.mode}`)],
+      [button("返回机器", "d:" + device.id), button("返回主页面", "home")],
+    ];
+  }
+  async browseDirectory(deviceId: string, mode: "cwd" | "new", target: DirectoryTarget = {}, messageId?: number) {
+    const device = this.device(deviceId);
+    if (device.desired === "running") throw new Error("修改目录前请先停止当前任务");
+    if (!device.state?.capabilities?.includes("directory_browser")) {
+      return this.renderPanel("directory_upgrade", deviceId,
+        `${device.name} · 选择目录\n当前工作目录：${device.settings.cwd || "未设置"}\n列出这台电脑的文件夹需要客户端 v0.2.6，请先更新程序。也可以手动输入路径。`,
+        [[button("更新程序", "update:" + deviceId), button("手动输入路径", `cwdmanual:${deviceId}:${mode}`)], [button("返回机器", "d:" + deviceId)]], false, false, messageId);
+    }
+    if (!this.online(device)) throw new Error("机器离线，无法读取目录，请上线后再试");
+    const browser: DirectoryBrowser = { id: id(), device_id: deviceId, mode, expires: now() + 600 };
+    this.put("directory-browser", browser, browser.expires);
+    await this.renderPanel("directories", deviceId, `${device.name} · 正在读取目录…`, this.directoryControls(browser), false, false, messageId, browser.id);
+    if (this.get<DirectoryBrowser>("directory-browser")?.id !== browser.id) return;
+    await this.issue(deviceId, "directories", { ...target, request_id: browser.id });
+  }
+  async directoryPage(browser: DirectoryBrowser, page?: DirectoryPage, error?: string) {
+    const device = this.device(browser.device_id);
+    const rows: Rows = [];
+    let text = `${device.name} · ${browser.mode === "new" ? "选择新会话目录" : "选择工作目录"}\n已选工作目录：${device.settings.cwd || "未设置"}`;
+    if (!page || !Array.isArray(page.entries)) {
+      text += "\n" + String(error || "目录读取失败，请重新选择目录").slice(0, 240);
+    } else {
+      text += `\n正在浏览：${page.path || (device.platform === "win32" ? "本机盘符" : "根目录")}\n文件夹：${page.total} 个`;
+      if (page.path) rows.push([button(browser.mode === "new" ? "在此目录新建并开始" : "✓ 选择此目录", "dirpick:" + this.directoryToken(browser, { path: page.path }))]);
+      for (const entry of page.entries.slice(0, 8)) {
+        const token = this.directoryToken(browser, { path: entry.path });
+        rows.push([button("📁 " + entry.name.replace(/[\r\n]/g, " ").slice(0, 38), "dirnav:" + token),
+          button(browser.mode === "new" ? "在此新建" : "选择", "dirpick:" + token)]);
+      }
+      if (!page.entries.length) text += "\n没有子文件夹，可以直接选择此目录。";
+      if (page.parent) rows.push([button("⬆ 上级目录", "dirnav:" + this.directoryToken(browser, { path: page.parent }))]);
+      const pagination = [];
+      for (const [label, offset] of [["上一页", page.previous_offset], ["下一页", page.next_offset]] as const) {
+        if (offset !== null) pagination.push(button(label, "dirnav:" + this.directoryToken(browser,
+          { ...(page.path ? { path: page.path } : { location: "roots" as const }), offset })));
+      }
+      if (pagination.length) rows.push(pagination);
+      if (page.total) text += `\n当前显示 ${page.offset + 1}–${page.offset + page.entries.length}，点击文件夹进入，点击旁边按钮选择。`;
+    }
+    rows.push(...this.directoryControls(browser));
+    await this.renderPanel("directories", device.id, text, rows, false, false, undefined, browser.id);
+  }
   async confirmSessionDeletion(deviceId: string, threadId: string, name: string | null, messageId?: number) {
     const device = this.device(deviceId);
     if (!device.state?.capabilities?.includes("session_delete")) throw new Error("删除会话需要客户端 v0.2.5，请先点更新程序");
@@ -464,6 +533,7 @@ export class BotHub extends DurableObject<Env> {
   async click(data: string, messageId?: number) {
     const [action, deviceId, arg] = data.split(":");
     this.del("input");
+    if (!["dirnav", "dirpick"].includes(action)) this.del("directory-browser");
     this.cancelDeletionConfirmation(action === "confirmdelete" ? deviceId : undefined);
     if (action === "home" || legacyBatchActions.has(action)) return this.home(false, messageId);
     if (action === "add") {
@@ -510,7 +580,26 @@ export class BotHub extends DurableObject<Env> {
       if (schedule) await this.syncStopAt(schedule.device_id);
       return this.say("定时任务已取消");
     }
+    if (action === "dirnav" || action === "dirpick") {
+      const target = this.get<DirectoryBrowser & DirectoryTarget>("directory:" + deviceId);
+      if (!target || target.expires < now() || this.get<DirectoryBrowser>("directory-browser")?.id !== target.id) throw new Error("目录按钮已过期，请重新点工作目录");
+      if (action === "dirnav") return this.browseDirectory(target.device_id, target.mode,
+        { path: target.path, offset: target.offset, location: target.location }, messageId);
+      if (!target.path) throw new Error("请先选择一个文件夹");
+      if (target.mode === "new") await this.issue(target.device_id, "start", { settings: { cwd: target.path, thread_id: null } });
+      else await this.issue(target.device_id, "settings", { cwd: target.path });
+      this.del("directory-browser");
+      this.rememberDir(target.device_id, target.path);
+      return this.card(target.device_id, true, messageId);
+    }
     const device = this.device(deviceId);
+    if (action === "cwd") return this.browseDirectory(deviceId, "cwd", {}, messageId);
+    if (action === "cwdmanual") {
+      if (device.desired === "running") throw new Error("修改目录前请先停止当前任务");
+      const mode = arg === "new" ? "new" : "cwd";
+      return this.ask(device.state?.capabilities?.includes("directory_browser") ? "directory_path" : mode,
+        [deviceId], "请输入该机器的绝对目录路径", { mode }, messageId);
+    }
     if (action === "deletecurrent") {
       if (!device.settings.thread_id) throw new Error("请先选择要删除的会话");
       return this.confirmSessionDeletion(deviceId, device.settings.thread_id, device.settings.thread_name, messageId);
@@ -538,13 +627,7 @@ export class BotHub extends DurableObject<Env> {
       return this.say(`${device.name}：${{ sessions: "正在读取会话", diagnose: "正在诊断", restart: "正在重启客户端", update: "正在更新程序" }[action]}`, undefined, true);
     }
     if (action === "new") {
-      if (device.desired === "running") throw new Error("请先停止当前任务");
-      const dirs = this.get<string[]>("dirs:" + deviceId) || [];
-      this.put("input", { type: "new", scope: "device", ids: [deviceId], expires: now() + 600 }, now() + 600);
-      return this.say(`新会话目录：输入本机绝对路径，或选择常用目录。\n当前目录：${device.settings.cwd || "未设置"}\n/cancel 取消`, [
-        ...(device.settings.cwd ? [[button("使用当前目录并开始", "newhere:" + deviceId)]] : []),
-        ...dirs.map((dir, i) => [button(dir.slice(-40), `newdir:${deviceId}:${i}`)]),
-      ], true);
+      return this.browseDirectory(deviceId, "new", {}, messageId);
     }
     if (["newhere", "newdir"].includes(action)) {
       this.del("input");
@@ -566,10 +649,9 @@ export class BotHub extends DurableObject<Env> {
       await this.issue(deviceId, "settings", { [action === "sethold" ? "hold_minutes" : "interval_minutes"]: arg === "none" ? null : Number(arg) });
       return this.card(deviceId, true, messageId);
     }
-    if (["customhold", "custominterval", "prompt", "cwd", "rename"].includes(action)) {
+    if (["customhold", "custominterval", "prompt", "rename"].includes(action)) {
       const type = action.replace("custom", "");
-      const prompts: Record<string, string> = { hold: "请输入保持分钟数，或 不限时", interval: "请输入发送间隔分钟数", prompt: "请输入每轮发送的内容", cwd: "请输入该机器的绝对工作目录", rename: "请输入新的机器名称" };
-      if (type === "cwd" && device.desired === "running") throw new Error("修改目录前请先停止当前任务");
+      const prompts: Record<string, string> = { hold: "请输入保持分钟数，或 不限时", interval: "请输入发送间隔分钟数", prompt: "请输入每轮发送的内容", rename: "请输入新的机器名称" };
       return this.ask(type, [deviceId], prompts[type], {}, messageId);
     }
     if (action === "manage") return this.renderPanel("manage", deviceId, device.name + " · 更多设置", [
@@ -605,6 +687,7 @@ export class BotHub extends DurableObject<Env> {
     if (input === "/cancel") {
       const deviceId = this.get<Panel>("panel")?.device_id;
       this.del("input");
+      this.del("directory-browser");
       this.cancelDeletionConfirmation();
       return deviceId && this.get("d:" + deviceId) ? this.card(deviceId) : this.home();
     }
@@ -612,6 +695,10 @@ export class BotHub extends DurableObject<Env> {
     const context = this.get<any>("input");
     if (!context || context.expires < now()) return this.say("使用 /start 打开机器面板。", undefined, true);
     if (context.scope !== "device" || !Array.isArray(context.ids) || context.ids.length !== 1) return this.home();
+    if (context.type === "directory_path") {
+      this.del("input");
+      return this.browseDirectory(context.ids[0], context.mode === "new" ? "new" : "cwd", { path: input });
+    }
     if (context.type === "hold") settings({ hold_minutes: input === "不限时" ? null : Number(input) });
     if (context.type === "interval") settings({ interval_minutes: Number(input) });
     const results = [];

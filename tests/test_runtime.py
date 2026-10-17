@@ -261,6 +261,19 @@ def test_selected_session_name_and_id_are_used_for_execution(agent):
     assert agent.task.settings.thread_name == "My project"
 
 
+def test_directory_command_reads_the_device_folders_without_starting_or_changing_settings(agent, monkeypatch):
+    (agent.root / "Project A").mkdir()
+    (agent.root / "file.txt").write_text("not a folder")
+    monkeypatch.setattr(agent.pool, "submit", lambda work: work())
+    before = agent.settings.json()
+    agent.command(command(agent, "directories", {}))
+    drain(agent)
+    result = agent.store.claim("cmd1")
+    assert result["ok"]
+    assert [entry["name"] for entry in result["directory"]["entries"]] == ["Project A"]
+    assert agent.settings.json() == before and agent.task is None
+
+
 def test_late_metadata_cannot_rename_another_selected_session(agent):
     agent.settings = Settings(thread_id="new", thread_name=None)
     agent.event("thread_info", {"id": "old", "name": "Wrong session"})

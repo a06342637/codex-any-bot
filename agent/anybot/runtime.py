@@ -13,6 +13,7 @@ import certifi
 
 from . import __version__
 from .codex import delete_thread, diagnose, find_codex, rpc, run_turn, thread_info
+from .directories import list_directories
 from .state import Settings, Task
 from .storage import Store, data_dir
 
@@ -77,7 +78,7 @@ class Agent:
         return {"event": "status", "version": self.version, "boot_id": self.boot_id,
                 "connected": self.connected, "synced": self.synced,
                 "agent_version": __version__, "settings": self.settings.json(),
-                "capabilities": ["session_delete", "session_names", "immediate_retry"],
+                "capabilities": ["session_delete", "session_names", "immediate_retry", "directory_browser"],
                 "task": self.task.json() if self.task else None, "time": self.clock()}
 
     def publish(self, notice=None):
@@ -191,10 +192,14 @@ class Agent:
                     self.events.put(("session_deleted", (command, result)))
                 self.pool.submit(remove)
                 return
-            elif action in ("sessions", "diagnose"):
+            elif action in ("sessions", "diagnose", "directories"):
+                current_cwd = self.settings.cwd
                 def work():
                     try:
-                        if action == "sessions":
+                        if action == "directories":
+                            value = {"ok": True, "directory": list_directories(
+                                current_cwd, payload.get("path"), payload.get("offset", 0), payload.get("location"))}
+                        elif action == "sessions":
                             result = rpc("thread/list", {"limit": 8, "sortKey": "updated_at", "archived": False,
                                                          **({"cursor": payload["cursor"]} if payload.get("cursor") else {})})
                             data = [{k: t.get(k) for k in ("id", "name", "preview", "cwd", "updatedAt")} for t in result.get("data", [])]

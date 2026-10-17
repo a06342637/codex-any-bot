@@ -129,6 +129,100 @@ describe("real SQLite-backed Durable Object", () => {
       expect(instance.device("machine1").settings.hold_minutes).toBeNull();
     });
   });
+  it("browses folders on the selected device, pages with short tokens, and selects without starting", async () => {
+    await seed("a"); await seed("b");
+    const response = await SELF.fetch("https://relay.example.com/v1/connect", { headers: { Upgrade: "websocket", "X-Device-ID": "a", Authorization: "Bearer secret-a" } });
+    const ws = response.webSocket!; ws.accept();
+    try {
+      await runInDurableObject(hub(), async (instance: BotHub) => {
+        const d = instance.device("a");
+        d.state = { capabilities: ["directory_browser"] };
+        instance.put("d:a", d);
+        await instance.click("cwd:a", 801);
+        let cmd = instance.list<any>("cmd:a:").find(c => c.action === "directories");
+        expect(cmd.payload.path).toBeUndefined();
+        expect(instance.device("a").settings.cwd).toBe("C:\\work");
+        const path = "C:\\work\\项目 空格 " + "很长的目录名".repeat(20);
+        const page = { path: "C:\\work", parent: "C:\\", entries: [{ name: "项目 空格", path }], offset: 0, previous_offset: null, next_offset: 8, total: 9, location: null };
+        const ack = (command: any, directory: any) => instance.webSocketMessage(instance.socket(instance.device("a"))!, JSON.stringify({ protocol: 1, event: "ack", command_id: command.id, ok: true, directory }));
+        await ack(cmd, page);
+        let buttons = calls.at(-1).body.reply_markup.inline_keyboard.flat();
+        expect(calls.at(-1).body.message_id).toBe(801);
+        expect(calls.at(-1).body.text).toContain("正在浏览：C:\\work");
+        expect(buttons.every((b: any) => b.callback_data.length <= 64)).toBe(true);
+        const oldSelection = buttons.find((b: any) => b.text === "选择").callback_data;
+        await instance.click(buttons.find((b: any) => b.text === "下一页").callback_data, 801);
+        cmd = instance.list<any>("cmd:a:").find(c => c.action === "directories" && !c.result);
+        expect(cmd.payload).toMatchObject({ path: "C:\\work", offset: 8 });
+        await expect(instance.click(oldSelection, 801)).rejects.toThrow("已过期");
+        await ack(cmd, { ...page, offset: 8, previous_offset: 0, next_offset: null });
+        buttons = calls.at(-1).body.reply_markup.inline_keyboard.flat();
+        await instance.click(buttons.find((b: any) => b.text === "选择").callback_data, 801);
+        expect(instance.device("a").settings.cwd).toBe(path);
+        expect(instance.device("b").settings.cwd).toBe("C:\\work");
+        expect(instance.list<any>("cmd:a:").some(c => c.action === "start")).toBe(false);
+        expect(instance.list("cmd:b:")).toHaveLength(0);
+      });
+    } finally { ws.close(); }
+  });
+  it("ignores late directory replies after switching machines and expired folder buttons", async () => {
+    await seed("a"); await seed("b");
+    const response = await SELF.fetch("https://relay.example.com/v1/connect", { headers: { Upgrade: "websocket", "X-Device-ID": "a", Authorization: "Bearer secret-a" } });
+    const ws = response.webSocket!; ws.accept();
+    try {
+      await runInDurableObject(hub(), async (instance: BotHub) => {
+        const d = instance.device("a"); d.state = { capabilities: ["directory_browser"] }; instance.put("d:a", d);
+        await instance.click("cwd:a", 802);
+        const oldButton = calls.at(-1).body.reply_markup.inline_keyboard.flat().find((b: any) => b.text === "用户主目录").callback_data;
+        const cmd = instance.list<any>("cmd:a:")[0];
+        await instance.click("d:b", 802);
+        const count = calls.length;
+        await instance.webSocketMessage(instance.socket(instance.device("a"))!, JSON.stringify({ protocol: 1, event: "ack", command_id: cmd.id, ok: true,
+          directory: { path: "C:\\work", parent: "C:\\", entries: [], offset: 0, previous_offset: null, next_offset: null, total: 0 } }));
+        expect(calls.length).toBe(count);
+        expect(instance.get<any>("panel").device_id).toBe("b");
+        await expect(instance.click(oldButton)).rejects.toThrow("已过期");
+      });
+    } finally { ws.close(); }
+  });
+  it("creates a new session only after selecting its directory, and keeps recovery controls on read failure", async () => {
+    await seed();
+    const response = await SELF.fetch("https://relay.example.com/v1/connect", { headers: { Upgrade: "websocket", "X-Device-ID": "machine1", Authorization: "Bearer secret-machine1" } });
+    const ws = response.webSocket!; ws.accept();
+    try {
+      await runInDurableObject(hub(), async (instance: BotHub) => {
+        const d = instance.device("machine1"); d.state = { capabilities: ["directory_browser"] }; d.settings.thread_id = "old-thread"; instance.put("d:machine1", d);
+        await instance.click("new:machine1", 803);
+        let cmd = instance.list<any>("cmd:machine1:")[0];
+        await instance.webSocketMessage(instance.socket(instance.device("machine1"))!, JSON.stringify({ protocol: 1, event: "ack", command_id: cmd.id, ok: false, message: "没有权限读取此目录" }));
+        expect(calls.at(-1).body.text).toContain("没有权限");
+        let buttons = calls.at(-1).body.reply_markup.inline_keyboard.flat();
+        await instance.click(buttons.find((b: any) => b.text === "用户主目录").callback_data, 803);
+        cmd = instance.list<any>("cmd:machine1:").find(c => !c.result);
+        expect(cmd.payload.location).toBe("home");
+        await instance.webSocketMessage(instance.socket(instance.device("machine1"))!, JSON.stringify({ protocol: 1, event: "ack", command_id: cmd.id, ok: true,
+          directory: { path: "C:\\empty", parent: "C:\\", entries: [], offset: 0, previous_offset: null, next_offset: null, total: 0 } }));
+        expect(instance.list<any>("cmd:machine1:").some(c => c.action === "start")).toBe(false);
+        expect(calls.at(-1).body.text).toContain("没有子文件夹");
+        buttons = calls.at(-1).body.reply_markup.inline_keyboard.flat();
+        await instance.click(buttons.find((b: any) => b.text === "在此目录新建并开始").callback_data, 803);
+        expect(instance.list<any>("cmd:machine1:").find(c => c.action === "start").payload.settings).toMatchObject({ cwd: "C:\\empty", thread_id: null, thread_name: null });
+      });
+    } finally { ws.close(); }
+  });
+  it("offers update and manual input to older clients without sending unsupported directory commands", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.click("cwd:machine1", 804);
+      expect(calls.at(-1).body.text).toContain("v0.2.6");
+      expect(instance.list("cmd:")).toHaveLength(0);
+      await instance.click("cwdmanual:machine1:cwd", 804);
+      await instance.text("C:\\manual folder");
+      expect(instance.device("machine1").settings.cwd).toBe("C:\\manual folder");
+      const d = instance.device("machine1"); d.desired = "running"; instance.put("d:machine1", d);
+      await expect(instance.click("cwd:machine1")).rejects.toThrow("先停止");
+    });
+  });
   it("persists the selected session title and ID at the top of the control page", async () => {
     await seed();
     await runInDurableObject(hub(), async (instance: BotHub) => {
