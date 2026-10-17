@@ -129,6 +129,61 @@ describe("real SQLite-backed Durable Object", () => {
       expect(instance.device("machine1").settings.hold_minutes).toBeNull();
     });
   });
+  it("persists the selected session title and ID at the top of the control page", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      instance.put("session:choice", { device_id: "machine1", id: "thread-a", name: "Project A", cwd: "C:\\work" });
+      await instance.click("select:choice", 901);
+      expect(instance.device("machine1").settings.thread_name).toBe("Project A");
+      expect(instance.device("machine1").settings.thread_id).toBe("thread-a");
+    });
+    const text = calls.filter(c => c.url.endsWith("/editMessageText")).at(-1).body.text;
+    expect(text).toContain("当前选择：Project A\n会话 ID：thread-a");
+  });
+  it("deletes only after a single-use confirmation and clears selection after matching acknowledgement", async () => {
+    await seed("a"); await seed("b");
+    const response = await SELF.fetch("https://relay.example.com/v1/connect", { headers: { Upgrade: "websocket", "X-Device-ID": "a", Authorization: "Bearer secret-a" } });
+    const ws = response.webSocket!; ws.accept();
+    try {
+      await runInDurableObject(hub(), async (instance: BotHub) => {
+        const d = instance.device("a");
+        d.settings = { ...d.settings, thread_id: "delete-me", thread_name: "Delete me" };
+        d.state = { version: 0, task: null, capabilities: ["session_delete"] };
+        instance.put("d:a", d);
+        await instance.click("deletecurrent:a", 902);
+        expect(instance.list("cmd:a:")).toHaveLength(0);
+        const token = instance.get<any>("active-delete-confirm").token;
+        await instance.click("confirmdelete:" + token, 902);
+        const cmd = instance.list<any>("cmd:a:")[0];
+        expect(cmd).toMatchObject({ action: "delete_session", payload: { thread_id: "delete-me" } });
+        expect(instance.device("a").settings.thread_id).toBe("delete-me");
+        await expect(instance.click("confirmdelete:" + token, 902)).rejects.toThrow("已使用");
+        await expect(instance.issue("a", "start", {})).rejects.toThrow("正在删除");
+        await instance.webSocketMessage(instance.socket(instance.device("a"))!, JSON.stringify({ protocol: 1, event: "ack", command_id: cmd.id, ok: true, deleted_thread_id: "delete-me" }));
+        expect(instance.device("a").settings.thread_id).toBeNull();
+        expect(instance.device("a").settings.thread_name).toBeNull();
+        expect(instance.device("a").session_delete).toBeUndefined();
+        expect(instance.list("cmd:b:")).toHaveLength(0);
+      });
+    } finally { ws.close(); }
+  });
+  it("cancels deletion confirmations on navigation and refuses an active task", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1");
+      d.settings = { ...d.settings, thread_id: "chosen", thread_name: "Chosen" };
+      d.state = { version: 0, task: null, capabilities: ["session_delete"] };
+      instance.put("d:machine1", d);
+      await instance.click("deletecurrent:machine1");
+      const token = instance.get<any>("active-delete-confirm").token;
+      await instance.click("d:machine1");
+      await expect(instance.click("confirmdelete:" + token)).rejects.toThrow("已过期");
+      d.desired = "running";
+      instance.put("d:machine1", d);
+      await expect(instance.click("deletecurrent:machine1")).rejects.toThrow("先停止");
+      expect(instance.list("cmd:")).toHaveLength(0);
+    });
+  });
   it("discards legacy batch input without changing any machine", async () => {
     await seed("a"); await seed("b");
     await runInDurableObject(hub(), async (instance: BotHub) => {

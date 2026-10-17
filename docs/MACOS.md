@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [先部署 CF](DEPLOY.md) · [TG 操作](TELEGRAM.md) · [问题排查](TESTING.md)
 
-适用于 v0.2.4、Mac Apple Silicon / Intel。以下命令在 macOS 的“终端”执行。
+适用于 v0.2.5、Mac Apple Silicon / Intel。以下命令在 macOS 的“终端”执行。
 
 ## 1. 准备 CF 和 Codex
 
@@ -43,7 +43,7 @@ cd "$HOME/Documents"
 运行下面完整一行：
 
 ~~~bash
-(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.4/install.sh' -o "$p" && bash "$p")
+(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.5/install.sh' -o "$p" && bash "$p")
 ~~~
 
 也可以去 Bot 点击“添加机器”，使用它给出的 Mac 命令；该命令已预填自己的 CF 地址。

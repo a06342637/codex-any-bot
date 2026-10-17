@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authorized, parseSchedule, settings } from "../src/model";
+import { authorized, localTime, parseSchedule, settings } from "../src/model";
 
 describe("configuration and time", () => {
   it("requires both the permitted user and chat", () => {
@@ -23,5 +23,12 @@ describe("configuration and time", () => {
     expect(() => parseSchedule("2026-02-30 11:00", current)).toThrow();
     expect(() => parseSchedule("每天 25:99", current)).toThrow();
     expect(() => parseSchedule("2026-10-15 09:00", current)).toThrow();
+  });
+  it("formats Beijing time deterministically across the UTC date boundary", () => {
+    expect(localTime(Date.parse("2026-10-15T16:05:06Z") / 1000)).toBe("2026-10-16 00:05:06（北京时间）");
+  });
+  it("keeps old clients compatible with missing session names", () => {
+    expect(settings({ thread_id: "legacy", thread_name: undefined }).thread_name).toBeNull();
+    expect(settings({ thread_id: null, thread_name: "Old title" }).thread_name).toBeNull();
   });
 });

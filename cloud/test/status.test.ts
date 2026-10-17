@@ -29,4 +29,18 @@ describe("live task status", () => {
     d.run_command_id = "job"; d.desired = "stopped";
     expect(runtimeStatus(d).phase).toBe("stopping");
   });
+  it("shows the actual task session even if another session has since been selected", () => {
+    const d = device();
+    d.settings = { ...defaults, thread_id: "selected-b", thread_name: "Current B" };
+    d.state.task.settings = { ...defaults, thread_id: "executed-a", thread_name: "Executed A" };
+    const text = runtimeStatus(d).lines.join("\n");
+    expect(text).toContain("发送到会话：Executed A");
+    expect(text).toContain("会话 ID：executed-a");
+    expect(text).not.toContain("Current B");
+  });
+  it("reports an immediate retry without applying the successful-round interval", () => {
+    const d = device();
+    Object.assign(d.state.task, { phase: "retrying", next_at: 1000 });
+    expect(runtimeStatus(d, 1000).lines.join("\n")).toContain("立即重试");
+  });
 });

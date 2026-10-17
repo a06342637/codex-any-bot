@@ -27,13 +27,18 @@ def test_change_duration_uses_original_start_and_earliest_stop():
     assert task.deadline == 5000
 
 
-def test_retry_backoff_and_pauses():
+def test_failures_retry_immediately_and_only_success_uses_interval():
     task = Task("one", 1, Settings())
-    for i, delay in enumerate((5, 10, 20, 40, 60, 60)):
+    for i in range(6):
         task.finish(i * 100, "failed")
-        assert task.next_at == i * 100 + delay
+        assert task.next_at == i * 100
     task.finish(1000, "locked")
-    assert task.next_at == 1060
+    assert task.next_at == 1000
+    task.finish(1050, "success")
+    assert task.next_at == 1110
+    deadline = task.first_success_at
+    task.finish(1060, "failed")
+    assert task.next_at == 1060 and task.first_success_at == deadline
     task.finish(1100, "auth")
     assert task.phase == "paused"
 

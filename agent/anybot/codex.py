@@ -268,6 +268,26 @@ def provider_auth_status(config_root: Path | None = None) -> dict:
     return {"provider": provider, "requires_openai_login": True}
 
 
+def thread_info(thread_id: str) -> dict:
+    result = rpc("thread/read", {"threadId": thread_id, "includeTurns": False})
+    thread = result.get("thread", {})
+    if thread.get("id") != thread_id:
+        raise RuntimeError("会话信息不匹配")
+    title = str(thread.get("name") or thread.get("preview") or "").strip().splitlines()
+    return {"id": thread_id, "name": title[0][:80] if title else None}
+
+
+def delete_thread(thread_id: str) -> None:
+    if not isinstance(thread_id, str) or not thread_id or len(thread_id) > 128:
+        raise ValueError("无效的会话 ID")
+    try:
+        rpc("thread/delete", {"threadId": thread_id})
+    except RuntimeError as error:
+        if "-32601" in str(error) or "method not found" in str(error).lower():
+            raise RuntimeError("当前 Codex CLI 不支持删除会话，请先更新 Codex") from None
+        raise RuntimeError("删除会话未完成，请检查会话是否被占用以及 Codex 状态") from None
+
+
 def diagnose() -> dict:
     binary = find_codex()
     kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}

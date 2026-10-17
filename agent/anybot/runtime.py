@@ -12,7 +12,7 @@ import websocket
 import certifi
 
 from . import __version__
-from .codex import diagnose, find_codex, rpc, run_turn
+from .codex import delete_thread, diagnose, find_codex, rpc, run_turn, thread_info
 from .state import Settings, Task
 from .storage import Store, data_dir
 
@@ -44,6 +44,8 @@ class Agent:
         self.connection_id = ""
         self.last_status = 0
         self.boot_id = str(uuid.uuid4())
+        self.session_operation = False
+        self.metadata_requested = set()
 
     def send(self, message):
         if self.connected and self.ws:
@@ -75,6 +77,7 @@ class Agent:
         return {"event": "status", "version": self.version, "boot_id": self.boot_id,
                 "connected": self.connected, "synced": self.synced,
                 "agent_version": __version__, "settings": self.settings.json(),
+                "capabilities": ["session_delete", "session_names", "immediate_retry"],
                 "task": self.task.json() if self.task else None, "time": self.clock()}
 
     def publish(self, notice=None):
@@ -96,6 +99,17 @@ class Agent:
         self.store.complete(command["id"], result)
         self.send({"event": "ack", "command_id": command["id"], **result})
 
+    def request_thread_info(self, thread_id):
+        if not thread_id or thread_id in self.metadata_requested:
+            return
+        self.metadata_requested.add(thread_id)
+        def read():
+            try:
+                self.events.put(("thread_info", thread_info(thread_id)))
+            except Exception:
+                pass  # An unavailable title must not block execution or hide its ID.
+        self.pool.submit(read)
+
     def command(self, command):
         if command.get("device_id") != self.config["device_id"]:
             return
@@ -111,12 +125,22 @@ class Agent:
                 raise ValueError("指令已过期，请重新操作")
             if version < self.version:
                 raise ValueError("指令已被较新的操作替代")
+            if self.session_operation and action in ("start", "settings", "delete_session", "restart", "update"):
+                raise ValueError("正在删除会话，请等待完成")
             self.version = version
             self.store.put("version", version)
             if action == "stop":
                 self.stop(payload.get("reason", "手动停止"))
             elif action == "settings":
-                self.settings = Settings.parse({**self.settings.json(), **payload})
+                if self.task and self.task.phase not in ("stopped", "paused") and (
+                    ("thread_id" in payload and payload["thread_id"] != self.task.settings.thread_id)
+                    or ("cwd" in payload and payload["cwd"] != self.task.settings.cwd)
+                ):
+                    raise ValueError("修改会话或目录前请先停止任务")
+                values = {**self.settings.json(), **payload}
+                if "thread_id" in payload and payload["thread_id"] != self.settings.thread_id and "thread_name" not in payload:
+                    values["thread_name"] = None
+                self.settings = Settings.parse(values)
                 self.store.put("settings", self.settings.json())
                 if self.task and self.task.phase not in ("stopped", "paused"):
                     # A live task keeps its selected thread and directory.
@@ -137,6 +161,8 @@ class Agent:
                 if self.worker and self.worker.is_alive():
                     raise ValueError("正在停止上一轮，请稍后再试")
                 settings = Settings.parse({**self.settings.json(), **payload.get("settings", {})})
+                if settings.thread_id != self.settings.thread_id and "thread_name" not in payload.get("settings", {}):
+                    settings.thread_name = None
                 directory = Path(settings.cwd).expanduser()
                 if not settings.cwd or not directory.is_absolute() or not directory.is_dir():
                     raise ValueError("工作目录不存在，请在 TG 设置有效的绝对路径")
@@ -145,6 +171,26 @@ class Agent:
                 self.settings = settings
                 self.store.put("settings", settings.json())
                 self.task = Task(command["id"], version, Settings.parse(settings.json()), stop_at=payload.get("stop_at"))
+                if not settings.thread_name:
+                    self.request_thread_info(settings.thread_id)
+            elif action == "delete_session":
+                if (self.worker and self.worker.is_alive()) or (self.task and self.task.phase not in ("stopped", "paused")):
+                    raise ValueError("请先停止当前任务，再删除会话")
+                target = payload.get("thread_id")
+                if not isinstance(target, str) or not target or len(target) > 128:
+                    raise ValueError("无效的会话 ID")
+                self.session_operation = True
+                def remove():
+                    try:
+                        if command.get("expires_at", 0) < self.clock():
+                            raise RuntimeError("删除指令已过期，请重新确认")
+                        delete_thread(target)
+                        result = {"ok": True, "deleted_thread_id": target}
+                    except Exception as exc:
+                        result = {"ok": False, "message": str(exc)[:240] if isinstance(exc, RuntimeError) else "删除会话失败"}
+                    self.events.put(("session_deleted", (command, result)))
+                self.pool.submit(remove)
+                return
             elif action in ("sessions", "diagnose"):
                 def work():
                     try:
@@ -255,6 +301,8 @@ class Agent:
                 if value.get("settings"):
                     self.settings = Settings.parse(value["settings"])
                     if self.task and self.task.phase not in ("stopped", "paused"):
+                        if self.settings.thread_id != self.task.settings.thread_id or not self.settings.thread_name:
+                            self.settings.thread_name = self.task.settings.thread_name
                         self.settings.thread_id = self.task.settings.thread_id
                         self.task.settings = Settings.parse({**self.settings.json(), "cwd": self.task.settings.cwd})
                         self.task.stop_at = value.get("stop_at")
@@ -265,15 +313,46 @@ class Agent:
                 self.publish()
         elif kind == "result":
             self.acknowledge(*value)
+        elif kind == "thread_info":
+            changed = False
+            for setting in [self.settings, self.task.settings if self.task else None]:
+                if setting and setting.thread_id == value["id"] and value.get("name") and not setting.thread_name:
+                    setting.thread_name = value["name"]
+                    changed = True
+            if changed:
+                self.store.put("settings", self.settings.json())
+                self.publish()
+        elif kind == "session_deleted":
+            command, result = value
+            self.session_operation = False
+            if result.get("ok"):
+                target = result["deleted_thread_id"]
+                if self.settings.thread_id == target:
+                    self.settings.thread_id = None
+                    self.settings.thread_name = None
+                    self.store.put("settings", self.settings.json())
+                if self.task and self.task.settings.thread_id == target:
+                    self.task = None
+                    result["cleared_task"] = True
+                self.publish()
+            self.acknowledge(command, result)
         elif kind in ("progress", "finished"):
             run_id, result = value
             if not self.task or self.task.id != run_id:
                 return
             tid = result.get("thread_id")
             if tid:
+                previous_tid = self.task.settings.thread_id
+                if tid != self.task.settings.thread_id:
+                    self.task.settings.thread_name = None
                 self.task.settings.thread_id = tid
-                self.settings.thread_id = tid
-                self.store.put("settings", self.settings.json())
+                if self.settings.thread_id in (previous_tid, tid):
+                    if tid != self.settings.thread_id:
+                        self.settings.thread_name = None
+                    self.settings.thread_id = tid
+                    self.store.put("settings", self.settings.json())
+                if not self.task.settings.thread_name:
+                    self.request_thread_info(tid)
             if kind == "finished":
                 if self.task.phase in ("stopped", "stopping") or result["kind"] == "cancelled":
                     self.task.phase = "stopped"
@@ -324,6 +403,8 @@ class Agent:
         sender.start()
         network = threading.Thread(target=self.network, daemon=True)
         network.start()
+        if not self.settings.thread_name:
+            self.request_thread_info(self.settings.thread_id)
         try:
             while not self.shutdown.is_set():
                 try:

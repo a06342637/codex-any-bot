@@ -4,10 +4,12 @@ export interface Settings {
   prompt: string;
   cwd: string;
   thread_id: string | null;
+  thread_name: string | null;
 }
-export const defaults: Settings = { hold_minutes: null, interval_minutes: 1, prompt: "在", cwd: "", thread_id: null };
+export const defaults: Settings = { hold_minutes: null, interval_minutes: 1, prompt: "在", cwd: "", thread_id: null, thread_name: null };
 export function settings(input: Partial<Settings>): Settings {
   const value = { ...defaults, ...input };
+  value.thread_name ??= null;
   for (const key of ["hold_minutes", "interval_minutes"] as const) {
     const n = value[key];
     if (key === "hold_minutes" && n === null) continue;
@@ -15,6 +17,8 @@ export function settings(input: Partial<Settings>): Settings {
   }
   if (typeof value.prompt !== "string" || !value.prompt.trim() || value.prompt.length > 4000) throw new Error("发送内容须为 1–4000 字符");
   if (typeof value.cwd !== "string" || (value.thread_id !== null && typeof value.thread_id !== "string")) throw new Error("无效的会话配置");
+  if (value.thread_name !== null && (typeof value.thread_name !== "string" || value.thread_name.length > 160)) throw new Error("无效的会话名称");
+  if (!value.thread_id) value.thread_name = null;
   return value;
 }
 export function authorized(update: any, user: string, chat: string): boolean {
@@ -31,7 +35,7 @@ export function secret(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(32)), x => x.toString(16).padStart(2, "0")).join("");
 }
 export function localTime(value: number): string {
-  return new Date(value * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+  return new Date((value + 8 * 3600) * 1000).toISOString().slice(0, 19).replace("T", " ") + "（北京时间）";
 }
 export function parseSchedule(input: string, current = now()): { kind: "once" | "daily"; due: number; time?: string } {
   const daily = /^每天\s+(\d{2}):(\d{2})$/.exec(input);
@@ -54,6 +58,7 @@ export interface Device {
   seen: number; connection?: string; boot_id?: string; state?: any;
   card_id?: number; card_text?: string; notice_key?: string; offline_notified?: boolean;
   run_command_id?: string;
+  session_delete?: { command_id: string; thread_id: string };
 }
 export interface Command { type: "command"; protocol: 1; id: string; device_id: string; version: number; action: string; payload: any; expires_at: number; result?: any }
 export interface Schedule { id: string; device_id: string; action: "start" | "stop"; kind: "once" | "daily"; due: number; time?: string }

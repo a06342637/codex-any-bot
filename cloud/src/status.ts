@@ -1,10 +1,15 @@
-import { localTime, now, type Device } from "./model";
+import { localTime, now, type Device, type Settings } from "./model";
 
 const reasons: Record<string, string> = {
-  failed: "本轮执行未成功，稍后自动重试", locked: "会话正在被占用，等待释放",
+  failed: "本轮执行未成功", locked: "会话正在被占用，本轮未成功",
   auth: "登录或服务认证失效", permission: "权限不足，需要在电脑上处理",
   archived: "会话已归档", unknown_session: "未能确认新会话，已暂停以避免重复创建",
 };
+
+export function sessionLines(value: Partial<Settings>, label = "当前会话"): string[] {
+  if (!value.thread_id) return [`${label}：新建会话（等待创建）`, "会话 ID：等待分配"];
+  return [`${label}：${value.thread_name || "未命名会话"}`, `会话 ID：${value.thread_id}`];
+}
 
 export function runtimeStatus(device: Device, current = now()) {
   const reported = device.state?.task;
@@ -24,13 +29,17 @@ export function runtimeStatus(device: Device, current = now()) {
     stopping: "⏸ 停止指令已发送，等待电脑确认",
     stopped: "⏹ 已停止", paused: "⚠️ 已暂停，需要处理异常",
   };
-  const lines = [labels[phase] || "待命"];
+  const target = task?.settings ? { ...task.settings,
+    thread_name: task.settings.thread_name || (task.settings.thread_id === device.settings.thread_id ? device.settings.thread_name : null) } : device.settings;
+  const lines = [labels[phase] || "待命", ...sessionLines(target, "发送到会话")];
   if (task) {
     lines.push(`尝试：${attempt || "旧版未上报"} 次 · 重试：${task.retry_count ?? "旧版未上报"} 次 · 成功：${task.rounds || 0} 轮`);
     if (task.failures) lines.push(`连续失败：${task.failures} 次`);
     if (task.reason) lines.push("说明：" + (reasons[task.reason] || String(task.reason).slice(0, 180)));
     if (["retrying", "holding"].includes(phase) && task.next_at) {
-      lines.push(`${phase === "retrying" ? "下次重试" : "下次发送"}：${localTime(task.next_at)}（${Math.max(0, Math.ceil(task.next_at - current))} 秒后）`);
+      lines.push(phase === "retrying" && task.next_at <= current
+        ? "立即重试：上一轮已结束，继续尝试同一会话"
+        : `${phase === "retrying" ? "下次重试" : "成功后下次发送"}：${localTime(task.next_at)}（${Math.max(0, Math.ceil(task.next_at - current))} 秒后）`);
     }
     if (task.first_success_at && !["stopped", "paused"].includes(phase)) {
       lines.push(`首次成功：${localTime(task.first_success_at)}`);

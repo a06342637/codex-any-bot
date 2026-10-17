@@ -10,6 +10,7 @@ class Settings:
     prompt: str = "在"
     cwd: str = ""
     thread_id: str | None = None
+    thread_name: str | None = None
 
     @classmethod
     def parse(cls, data: dict[str, Any]) -> "Settings":
@@ -26,6 +27,10 @@ class Settings:
             raise ValueError("工作目录必须为字符串")
         if obj.thread_id is not None and not isinstance(obj.thread_id, str):
             raise ValueError("会话 ID 必须为字符串")
+        if obj.thread_name is not None and (not isinstance(obj.thread_name, str) or len(obj.thread_name) > 160):
+            raise ValueError("会话名称必须为不超过 160 字符的字符串")
+        if not obj.thread_id:
+            obj.thread_name = None
         return obj
 
     def json(self) -> dict:
@@ -85,8 +90,7 @@ class Task:
             self.reason = kind
         else:
             self.failures += 1
-            delay = 60 if kind == "locked" else min(60, 5 * 2 ** min(self.failures - 1, 4))
-            self.retry_at = now + delay
+            self.retry_at = now
             self.phase = "retrying"
             self.reason = kind
         return first

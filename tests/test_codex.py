@@ -73,3 +73,17 @@ def test_process_group_inspection_ignores_zombies_and_other_groups(monkeypatch):
     assert not codex.group_has_live_members(1234)
     monkeypatch.setattr(codex.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout="3 1234 S+\n"))
     assert codex.group_has_live_members(1234)
+
+
+def test_session_metadata_reads_only_metadata_and_verifies_the_id(monkeypatch):
+    calls = []
+    monkeypatch.setattr(codex, "rpc", lambda *args: calls.append(args) or {"thread": {"id": "selected", "name": "My session"}})
+    assert codex.thread_info("selected") == {"id": "selected", "name": "My session"}
+    assert calls == [("thread/read", {"threadId": "selected", "includeTurns": False})]
+
+
+def test_delete_uses_official_api_for_only_the_explicit_target(monkeypatch):
+    calls = []
+    monkeypatch.setattr(codex, "rpc", lambda *args: calls.append(args) or {})
+    codex.delete_thread("selected")
+    assert calls == [("thread/delete", {"threadId": "selected"})]

@@ -10,6 +10,7 @@ from anybot.state import Settings, Task
 @pytest.fixture
 def agent(tmp_path, monkeypatch):
     monkeypatch.setattr("anybot.runtime.find_codex", lambda: "fake-codex")
+    monkeypatch.setattr("anybot.runtime.thread_info", lambda tid: {"id": tid, "name": "Test session"})
     current = [1000.0]
     result = Agent({"device_id": "device1", "cwd": str(tmp_path)}, root=tmp_path,
                    clock=lambda: current[0], turn_runner=lambda *args: {"kind": "success", "thread_id": "thread1"})
@@ -235,8 +236,8 @@ def test_attempt_and_retry_counters_survive_a_success_without_extending_deadline
     assert agent.task.retry_count == 2
     assert agent.task.rounds == 2 and agent.task.failures == 0
     assert agent.task.reason == ""
-    assert agent.task.first_success_at == 1015
-    assert agent.task.deadline == 1615
+    assert agent.task.first_success_at == 1000
+    assert agent.task.deadline == 1600
 
 
 def test_running_status_is_published_every_five_seconds(agent):
@@ -247,3 +248,80 @@ def test_running_status_is_published_every_five_seconds(agent):
     state = agent.store.get("last_state")
     assert state["time"] == 1005
     assert state["task"]["attempts"] == 3 and state["task"]["retry_count"] == 2
+
+
+def test_selected_session_name_and_id_are_used_for_execution(agent):
+    received = []
+    agent.turn_runner = lambda binary, setting, *args: received.append((setting.thread_id, setting.thread_name)) or {"kind": "success", "thread_id": setting.thread_id}
+    agent.command(command(agent, "settings", {"thread_id": "selected", "thread_name": "My project"}))
+    agent.command(command(agent, "start", version=2, command_id="start"))
+    agent.tick()
+    drain(agent)
+    assert received == [("selected", "My project")]
+    assert agent.task.settings.thread_name == "My project"
+
+
+def test_late_metadata_cannot_rename_another_selected_session(agent):
+    agent.settings = Settings(thread_id="new", thread_name=None)
+    agent.event("thread_info", {"id": "old", "name": "Wrong session"})
+    assert agent.settings.thread_name is None
+    agent.event("thread_info", {"id": "new", "name": "Correct session"})
+    assert agent.settings.thread_name == "Correct session"
+
+
+def test_delete_session_clears_selection_only_after_success(agent, monkeypatch):
+    calls = []
+    monkeypatch.setattr("anybot.runtime.delete_thread", lambda tid: calls.append(tid))
+    monkeypatch.setattr(agent.pool, "submit", lambda work: work())
+    agent.settings = Settings(thread_id="chosen", thread_name="Chosen")
+    agent.task = Task("old", 1, Settings(thread_id="chosen", thread_name="Chosen"), phase="stopped")
+    agent.command(command(agent, "delete_session", {"thread_id": "chosen"}, command_id="delete"))
+    assert agent.settings.thread_id == "chosen" and agent.session_operation
+    drain(agent)
+    assert calls == ["chosen"]
+    assert agent.settings.thread_id is None and agent.settings.thread_name is None
+    assert agent.task is None and not agent.session_operation
+    agent.command(command(agent, "delete_session", {"thread_id": "chosen"}, command_id="delete"))
+    assert calls == ["chosen"]
+
+
+def test_failed_delete_retains_selection_and_running_task_cannot_be_deleted(agent, monkeypatch):
+    def fail(tid):
+        raise RuntimeError("delete failed")
+    monkeypatch.setattr("anybot.runtime.delete_thread", fail)
+    monkeypatch.setattr(agent.pool, "submit", lambda work: work())
+    agent.settings = Settings(thread_id="chosen", thread_name="Chosen")
+    agent.command(command(agent, "delete_session", {"thread_id": "chosen"}))
+    drain(agent)
+    assert agent.settings.thread_id == "chosen" and not agent.session_operation
+    agent.task = Task("running", 1, agent.settings, phase="running")
+    agent.command(command(agent, "delete_session", {"thread_id": "chosen"}, version=2, command_id="delete-running"))
+    assert agent.task.phase == "running" and not agent.session_operation
+    assert not agent.store.claim("delete-running")["ok"]
+
+
+def test_start_and_update_wait_for_delete_to_finish(agent):
+    agent.session_operation = True
+    agent.command(command(agent, "start"))
+    agent.command(command(agent, "update", command_id="update"))
+    assert agent.task is None and agent.after_exit is None
+
+
+def test_late_old_task_progress_cannot_replace_current_selection(agent):
+    agent.settings = Settings(thread_id="selected-b", thread_name="B")
+    agent.task = Task("old", 1, Settings(thread_id="old-a", thread_name="A"), phase="stopped")
+    agent.event("progress", ("old", {"thread_id": "old-a"}))
+    assert agent.settings.thread_id == "selected-b" and agent.settings.thread_name == "B"
+    assert agent.task.settings.thread_name == "A"
+
+
+def test_queued_delete_cannot_execute_after_its_deadline(agent, monkeypatch):
+    pending = []
+    deleted = []
+    monkeypatch.setattr(agent.pool, "submit", lambda work: pending.append(work))
+    monkeypatch.setattr("anybot.runtime.delete_thread", lambda tid: deleted.append(tid))
+    agent.command(command(agent, "delete_session", {"thread_id": "chosen"}))
+    agent.current[0] += 61
+    pending[0]()
+    drain(agent)
+    assert not deleted and not agent.session_operation

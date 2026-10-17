@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { authorized, defaults, hash, id, localTime, now, parseSchedule, secret, settings, type Command, type Device, type Schedule, type Settings } from "./model";
-import { runtimeStatus } from "./status";
+import { runtimeStatus, sessionLines } from "./status";
 
 export interface Env {
   HUB: DurableObjectNamespace<BotHub>;
@@ -186,6 +186,7 @@ export class BotHub extends DurableObject<Env> {
       if (data.event === "hello") {
         const reboot = !!device.boot_id && device.boot_id !== data.boot_id;
         if (reboot) {
+          delete device.session_delete;
           device.desired = "stopped";
           device.version++;
           for (const cmd of this.list<Command>("cmd:" + device.id + ":")) if (!cmd.result) {
@@ -201,7 +202,8 @@ export class BotHub extends DurableObject<Env> {
         if (reboot) await this.say(`${device.name} 已重新启动，当前待命。`);
       } else if (data.event === "status") {
         device.state = data;
-        if (data.version === device.version && data.settings) device.settings = settings(data.settings);
+        if (data.version === device.version && data.settings) device.settings = settings({ ...data.settings,
+          thread_name: data.settings.thread_name ?? (data.settings.thread_id === device.settings.thread_id ? device.settings.thread_name : null) });
         if (data.version === device.version && (!data.task || ["stopped", "paused"].includes(data.task.phase))) device.desired = "stopped";
         this.put("d:" + device.id, device);
         if (data.notice && !data.task) {
@@ -218,8 +220,26 @@ export class BotHub extends DurableObject<Env> {
         const key = "cmd:" + device.id + ":" + data.command_id;
         const cmd = this.get<Command>(key);
         if (!cmd || cmd.result) return;
+        if (cmd.action === "delete_session" && data.ok && data.deleted_thread_id !== cmd.payload.thread_id) {
+          data.ok = false; data.message = "删除结果未匹配目标会话，请刷新列表核对";
+        }
         cmd.result = data;
         this.put(key, cmd, now() + 7 * 86400);
+        if (cmd.action === "delete_session" && device.session_delete?.command_id === cmd.id) {
+          delete device.session_delete;
+          if (data.ok && data.deleted_thread_id === cmd.payload.thread_id) {
+            if (device.settings.thread_id === data.deleted_thread_id) device.settings = settings({ ...device.settings, thread_id: null, thread_name: null });
+            if (data.cleared_task) { delete device.run_command_id; if (device.state) device.state.task = null; this.del("run:" + device.id); }
+            this.ctx.storage.sql.exec("DELETE FROM records WHERE (key LIKE 'session:%' OR key LIKE 'cursor:%' OR key LIKE 'delete-session:%') AND json_extract(value, '$.device_id')=?", device.id);
+          }
+          this.put("d:" + device.id, device);
+          if (data.ok && data.deleted_thread_id === cmd.payload.thread_id) {
+            await this.say(`${device.name}：已删除会话 ${cmd.payload.thread_name || "未命名会话"}\n会话 ID：${data.deleted_thread_id}`, [[button("选择会话", "sessions:" + device.id), button("控制面板", "d:" + device.id)]], true);
+            const panel = this.get<Panel>("panel");
+            if (panel?.device_id === device.id && panel.view === "delete_pending") await this.card(device.id);
+            return;
+          }
+        }
         if (!data.ok) {
           if (cmd.action === "start" && cmd.version === device.version) { device.desired = "stopped"; this.put("d:" + device.id, device); }
           await this.say(`${device.name}：${String(data.message || "操作失败").slice(0, 300)}`);
@@ -255,6 +275,10 @@ export class BotHub extends DurableObject<Env> {
       command.result = { ok: !!applied, message: applied ? "已由状态确认" : "指令已过期且未确认，不补执行" };
       this.put("cmd:" + command.device_id + ":" + command.id, command, now() + 7 * 86400);
       if (!device || applied) continue;
+      if (command.action === "delete_session" && device.session_delete?.command_id === command.id) {
+        delete device.session_delete;
+        this.put("d:" + device.id, device);
+      }
       if (command.action === "start" && command.version === device.version) {
         device.desired = "stopped";
         this.put("d:" + device.id, device);
@@ -291,10 +315,17 @@ export class BotHub extends DurableObject<Env> {
   }
   async issue(deviceId: string, action: string, payload: any): Promise<Command> {
     const device = this.device(deviceId);
+    if (device.session_delete && ["start", "settings", "delete_session", "update", "restart"].includes(action)) throw new Error("正在删除会话，请等待完成");
+    if (action === "delete_session") {
+      if (!device.state?.capabilities?.includes("session_delete")) throw new Error("删除会话需要客户端 v0.2.5，请先点更新程序");
+      if (device.desired === "running" || (device.state?.task && !["stopped", "paused"].includes(device.state.task.phase))) throw new Error("请先停止当前任务，再删除会话");
+      if (typeof payload.thread_id !== "string" || !payload.thread_id || payload.thread_id.length > 128) throw new Error("无效的会话 ID");
+    }
     if (!["stop", "settings", "deadline", "revoke"].includes(action) && !this.online(device)) throw new Error("机器离线，请上线后操作");
     if (action === "start") {
       if (device.desired === "running") throw new Error("机器已有任务，请先停止");
-      const actual = settings({ ...device.settings, ...payload.settings });
+      const actual = settings({ ...device.settings, ...payload.settings,
+        ...("thread_id" in (payload.settings || {}) && payload.settings.thread_id !== device.settings.thread_id && !("thread_name" in payload.settings) ? { thread_name: null } : {}) });
       if (!actual.cwd) throw new Error("请先设置工作目录");
       device.settings = actual;
       const nextStop = this.list<Schedule>("schedule:").filter(s => s.device_id === deviceId && s.action === "stop" && s.due > now()).sort((a, b) => a.due - b.due)[0];
@@ -304,11 +335,13 @@ export class BotHub extends DurableObject<Env> {
     if (action === "stop" || ["restart", "update", "revoke"].includes(action)) device.desired = "stopped";
     if (action === "settings") {
       if (device.desired === "running" && ("cwd" in payload || "thread_id" in payload)) throw new Error("修改目录或会话前请先停止任务");
-      device.settings = settings({ ...device.settings, ...payload });
+      device.settings = settings({ ...device.settings, ...payload,
+        ...("thread_id" in payload && payload.thread_id !== device.settings.thread_id && !("thread_name" in payload) ? { thread_name: null } : {}) });
     }
     device.version++;
     const command: Command = { type: "command", protocol: 1, id: id(), device_id: deviceId, version: device.version, action, payload, expires_at: now() + 60 };
     if (action === "start") device.run_command_id = command.id;
+    if (action === "delete_session") device.session_delete = { command_id: command.id, thread_id: payload.thread_id };
     this.put("d:" + deviceId, device);
     this.put("cmd:" + deviceId + ":" + command.id, command, now() + 7 * 86400);
     this.socket(device)?.send(JSON.stringify(command));
@@ -369,6 +402,7 @@ export class BotHub extends DurableObject<Env> {
   }
   async home(fresh = false, messageId?: number) {
     this.del("input");
+    this.cancelDeletionConfirmation();
     this.del("batch");
     const devices = this.list<Device>("d:");
     const rows: Rows = devices.map(d => [button(`${this.online(d) ? "🟢" : "⚫"} ${d.name} · ${d.desired === "running" ? "运行中" : "待命"}`, "d:" + d.id)]);
@@ -378,10 +412,11 @@ export class BotHub extends DurableObject<Env> {
   async card(deviceId: string, create = true, messageId?: number) {
     const device = this.device(deviceId);
     const runtime = runtimeStatus(device);
-    const text = `${this.online(device) ? "🟢" : "⚫"} ${device.name}\n客户端：${device.state?.agent_version || "等待上报"}\n${runtime.lines.join("\n")}\n会话：${device.settings.thread_id || "新建会话"}\n目录：${device.settings.cwd || "未设置"}\n保持：${device.settings.hold_minutes === null ? "不限时" : device.settings.hold_minutes + " 分钟"}\n发送间隔：${device.settings.interval_minutes} 分钟`;
+    const text = `${this.online(device) ? "🟢" : "⚫"} ${device.name}\n${sessionLines(device.settings, "当前选择").join("\n")}\n客户端：${device.state?.agent_version || "等待上报"}\n${runtime.lines.join("\n")}\n目录：${device.settings.cwd || "未设置"}\n保持：${device.settings.hold_minutes === null ? "不限时" : device.settings.hold_minutes + " 分钟"}\n成功后发送间隔：${device.settings.interval_minutes} 分钟`;
     const rows: Rows = [
       [button("开始", "start:" + deviceId), button("立即停止", "stop:" + deviceId)],
       [button("选择会话", "sessions:" + deviceId), button("新建并开始", "new:" + deviceId)],
+      [button("删除当前会话", "deletecurrent:" + deviceId)],
       [button(`保持：${device.settings.hold_minutes === null ? "不限时" : device.settings.hold_minutes + " 分钟"}`, "hold:" + deviceId), button(`间隔：${device.settings.interval_minutes} 分钟`, "interval:" + deviceId)],
       [button("发送内容", "prompt:" + deviceId), button("工作目录", "cwd:" + deviceId)],
       [button("重命名", "rename:" + deviceId), button("更新程序", "update:" + deviceId)],
@@ -402,18 +437,34 @@ export class BotHub extends DurableObject<Env> {
       const token = id();
       this.put("session:" + token, { device_id: device.id, ...session }, now() + 600);
       const name = String(session.name || session.preview || session.id).replaceAll("\n", " ").slice(0, 28);
-      rows.push([button(name, "select:" + token)]);
+      rows.push([button(`${session.id === device.settings.thread_id ? "✓ " : ""}${name}`, "select:" + token), button("删除", "deletesession:" + token)]);
     }
     if (cursor) {
       const token = id(); this.put("cursor:" + token, { device_id: device.id, cursor }, now() + 600);
       rows.push([button("下一页", "page:" + token)]);
     }
     rows.push([button("新建并开始", "new:" + device.id), button("返回", "d:" + device.id)]);
-    await this.say(`${device.name} 的会话（选择后查看详情，再点开始）`, rows, true);
+    await this.say(`${device.name} 的会话\n${sessionLines(device.settings, "当前选择").join("\n")}\n选择后查看详情，再点开始。删除前需确认。`, rows, true);
+  }
+  async confirmSessionDeletion(deviceId: string, threadId: string, name: string | null, messageId?: number) {
+    const device = this.device(deviceId);
+    if (!device.state?.capabilities?.includes("session_delete")) throw new Error("删除会话需要客户端 v0.2.5，请先点更新程序");
+    if (device.session_delete || device.desired === "running" || (device.state?.task && !["stopped", "paused"].includes(device.state.task.phase))) throw new Error("请先停止当前任务，再删除会话");
+    const token = id();
+    this.put("delete-session:" + token, { device_id: deviceId, thread_id: threadId, thread_name: name, expires: now() + 600 }, now() + 600);
+    this.put("active-delete-confirm", { token, device_id: deviceId }, now() + 600);
+    await this.renderPanel("delete_confirm", deviceId,
+      `${device.name}\n确认永久删除会话？\n名称：${name || "未命名会话"}\n会话 ID：${threadId}\n将通过 Codex 删除此会话及其派生子会话，无法在本程序恢复。`,
+      [[button("确认永久删除", "confirmdelete:" + token)], [button("取消", "d:" + deviceId)]], false, false, messageId);
+  }
+  cancelDeletionConfirmation(keep?: string) {
+    const pending = this.get<{ token: string }>("active-delete-confirm");
+    if (pending && pending.token !== keep) { this.del("delete-session:" + pending.token); this.del("active-delete-confirm"); }
   }
   async click(data: string, messageId?: number) {
     const [action, deviceId, arg] = data.split(":");
     this.del("input");
+    this.cancelDeletionConfirmation(action === "confirmdelete" ? deviceId : undefined);
     if (action === "home" || legacyBatchActions.has(action)) return this.home(false, messageId);
     if (action === "add") {
       const release = `https://github.com/a06342637/codex-any-bot/releases/download/${this.env.RELEASE_TAG}`;
@@ -429,9 +480,24 @@ export class BotHub extends DurableObject<Env> {
       if (!session) throw new Error("会话按钮已过期，请重新获取列表");
       const d = this.device(session.device_id);
       if (d.desired === "running") throw new Error("请先停止当前任务，再选择会话");
-      await this.issue(d.id, "settings", { thread_id: session.id, cwd: session.cwd || d.settings.cwd });
-      await this.say(`已选择会话\n${session.name || session.id}\n目录：${session.cwd}\n更新时间：${session.updatedAt ? localTime(session.updatedAt > 1e12 ? session.updatedAt / 1000 : session.updatedAt) : "未知"}`, undefined, true);
+      const title = String(session.name || session.preview || "").replaceAll("\n", " ").trim().slice(0, 160) || null;
+      await this.issue(d.id, "settings", { thread_id: session.id, thread_name: title, cwd: session.cwd || d.settings.cwd });
+      await this.say(`已选择会话\n${title || "未命名会话"}\n会话 ID：${session.id}\n目录：${session.cwd}\n更新时间：${session.updatedAt ? localTime(session.updatedAt > 1e12 ? session.updatedAt / 1000 : session.updatedAt) : "未知"}`, undefined, true);
       return this.card(d.id, true, messageId);
+    }
+    if (action === "deletesession") {
+      const session = this.get<any>("session:" + deviceId);
+      if (!session) throw new Error("会话列表已过期，请刷新后重试");
+      const name = String(session.name || session.preview || "").replaceAll("\n", " ").trim().slice(0, 160) || null;
+      return this.confirmSessionDeletion(session.device_id, session.id, name, messageId);
+    }
+    if (action === "confirmdelete") {
+      const target = this.get<any>("delete-session:" + deviceId);
+      this.del("delete-session:" + deviceId);
+      this.del("active-delete-confirm");
+      if (!target || target.expires < now()) throw new Error("删除确认已过期或已使用，请重新选择会话");
+      await this.renderPanel("delete_pending", target.device_id, `正在删除：${target.thread_name || "未命名会话"}\n会话 ID：${target.thread_id}\n等待电脑返回删除结果。`, [[button("返回主页面", "home")]], false, false, messageId);
+      return this.issue(target.device_id, "delete_session", { thread_id: target.thread_id, thread_name: target.thread_name });
     }
     if (action === "page") {
       const page = this.get<any>("cursor:" + deviceId);
@@ -445,6 +511,10 @@ export class BotHub extends DurableObject<Env> {
       return this.say("定时任务已取消");
     }
     const device = this.device(deviceId);
+    if (action === "deletecurrent") {
+      if (!device.settings.thread_id) throw new Error("请先选择要删除的会话");
+      return this.confirmSessionDeletion(deviceId, device.settings.thread_id, device.settings.thread_name, messageId);
+    }
     if (action === "d") { this.del("input"); return this.card(deviceId, true, messageId); }
     if (action === "status") return this.runCard(deviceId, true, messageId);
     if (action === "runstop" || action === "runcontinue") {
@@ -490,7 +560,7 @@ export class BotHub extends DurableObject<Env> {
       if (action === "hold") rows.push([button(`${current === null ? "✓ " : ""}不限时`, `sethold:${deviceId}:none`)]);
       rows.push([button("自定义分钟", `custom${action}:${deviceId}`)]);
       rows.push([button("返回机器", "d:" + deviceId), button("切换机器", "home")]);
-      return this.renderPanel(action, deviceId, `${device.name} · ${action === "hold" ? "保持时长（从首次成功开始）" : "发送间隔（上一轮结束后）"}\n当前：${current === null ? "不限时" : current + " 分钟"}`, rows, false, false, messageId);
+      return this.renderPanel(action, deviceId, `${device.name} · ${action === "hold" ? "保持时长（从首次成功开始）" : "发送间隔（仅在成功后等待）"}\n当前：${current === null ? "不限时" : current + " 分钟"}`, rows, false, false, messageId);
     }
     if (action === "sethold" || action === "setinterval") {
       await this.issue(deviceId, "settings", { [action === "sethold" ? "hold_minutes" : "interval_minutes"]: arg === "none" ? null : Number(arg) });
@@ -535,6 +605,7 @@ export class BotHub extends DurableObject<Env> {
     if (input === "/cancel") {
       const deviceId = this.get<Panel>("panel")?.device_id;
       this.del("input");
+      this.cancelDeletionConfirmation();
       return deviceId && this.get("d:" + deviceId) ? this.card(deviceId) : this.home();
     }
     if (input === "/stopall") return this.home();

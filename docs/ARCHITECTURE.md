@@ -18,7 +18,7 @@ Telegram 只配置一个 Webhook。Worker 验证 Webhook 密钥，随后校验�
 
 通过 `codex app-server` 的初始化握手及 `thread/list` 读取本机会话；不直接修改 Codex 数据文件。执行采用 `codex exec [resume] --json --skip-git-repo-check`，提示词从 stdin 输入，工作目录通过进程参数指定，不经过 shell 插值。
 
-仅 `turn.completed` 加正常退出算成功；首次成功设置 `first_success_at`。保持截止时间是 `first_success_at + hold_minutes × 60`，再与指定停止时间取最早值。后续轮次、失败和重连不会续期。发送间隔从上一轮结束计算；初始失败采用 5、10、20、40、60 秒退避，之后最多六十秒；会话占用每六十秒重试。
+仅 `turn.completed` 加正常退出算成功；首次成功设置 `first_success_at`。保持截止时间是 `first_success_at + hold_minutes × 60`，再与指定停止时间取最早值。后续轮次、失败和重连不会续期。发送间隔只从成功的轮次结束计算。可重试的失败或会话占用在上一轮结束后立即重试；认证、权限、归档和无法确定新会话等情况仍暂停。
 
 同机仅一个执行进程树。停止或到期设置取消信号，Windows Job Object / macOS 进程组清理所属子进程。客户端每约 0.2 秒检查取消和截止时间，模型响应没有固定时长保证。系统时钟应保持准确；电脑睡眠期间无法运行检查，醒来后先检查截止时间。
 
@@ -31,3 +31,5 @@ Telegram 只配置一个 Webhook。Worker 验证 Webhook 密钥，随后校验�
 Windows 包同时提供交互命令行入口和无窗口后台入口。安装/更新暂存位于本机程序目录的 cache，结束时清理；卸载器核对 ownership.json 与绝对路径后清理本机。旧版临时文件只清理可确认归属的项目，不盲删系统临时目录。
 
 新项目使用独立目录、启动项和仓库。参考项目 `C:\Users\adminuser\Downloads\an` 只读，项目中没有对它的运行时依赖。
+
+会话元数据包含 thread_id 和 thread_name。任务保留自己的会话快照，面板另外显示当前选择，迟到的旧任务事件不能覆盖新选择。删除会话使用 Codex thread/delete；确认令牌单次有效，删除期间禁止启动和切换，只有匹配的成功回执才清理选择。
