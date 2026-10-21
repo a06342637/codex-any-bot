@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import tomllib
+from collections import deque
 from pathlib import Path
 
 from . import __version__
@@ -141,113 +142,187 @@ def classify_error(text: str) -> str:
     return "failed"
 
 
-def run_turn(binary: str, settings, cancel: threading.Event, emit) -> dict:
-    args = [binary, "exec"]
-    if settings.thread_id:
-        args += ["resume"]
-    args += ["--json", "--skip-git-repo-check"]
-    if settings.thread_id:
-        args.append(settings.thread_id)
-    args.append("-")  # Prompt via stdin, never interpreted by a shell.
-    tree = ProcessTree(args, settings.cwd or None)
-    lines = queue.Queue()
+class TurnCancelled(Exception):
+    pass
 
-    def read():
+
+class RpcError(RuntimeError):
+    pass
+
+
+class UnknownSession(RuntimeError):
+    pass
+
+
+class AppServer:
+    """Quiet, cancellable stdio connection; never edits the user's config."""
+
+    def __init__(self, binary=None, cwd=None, cancel=None):
+        self.cancel = cancel or threading.Event()
+        self.tree = ProcessTree([binary or find_codex(), "-c", "notify=[]",
+                                 "-c", "tui.notifications=false", "app-server"], cwd)
+        self.replies = queue.Queue()
+        self.notifications = deque()
+        self.serial = 0
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def _read(self):
         try:
-            for raw in tree.proc.stdout:
-                lines.put(raw.decode("utf-8", "replace"))
+            for line in self.tree.proc.stdout:
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        self.replies.put(obj)
+                except ValueError:
+                    pass
         finally:
-            lines.put(None)
+            self.replies.put(None)
 
-    reader = threading.Thread(target=read, daemon=True)
-    reader.start()
-    tree.proc.stdin.write(settings.prompt.encode("utf-8"))
-    tree.proc.stdin.close()
-    completed = False
-    failed = False
-    thread_id = settings.thread_id
-    errors = []
-    try:
+    def send(self, data):
+        self.tree.proc.stdin.write((json.dumps(data) + "\n").encode("utf-8"))
+        self.tree.proc.stdin.flush()
+
+    def receive(self, until=None):
         while True:
-            if cancel.is_set():
-                return {"kind": "cancelled", "thread_id": thread_id}
+            if self.cancel.is_set():
+                raise TurnCancelled()
+            if until is not None and time.monotonic() >= until:
+                raise TimeoutError("Codex 会话接口超时")
             try:
-                line = lines.get(timeout=0.2)
+                obj = self.replies.get(timeout=0.2)
             except queue.Empty:
                 continue
-            if line is None:
-                break
-            try:
-                event = json.loads(line)
-            except (ValueError, TypeError):
-                if "error" in line.lower() or "failed" in line.lower():
-                    errors.append(line[:1000])
-                    errors = errors[-10:]
+            if obj is None:
+                raise RuntimeError("Codex app-server 已退出")
+            if "method" in obj and "id" in obj:
+                # Never approve tools or wait forever for unattended user input.
+                raise RpcError("approval or user input required")
+            return obj
+
+    def request(self, method, params):
+        self.serial += 1
+        mid = self.serial
+        self.send({"id": mid, "method": method, "params": params})
+        until = time.monotonic() + 30
+        while True:
+            obj = self.receive(until)
+            if obj.get("id") == mid:
+                if "error" in obj:
+                    raise RpcError(json.dumps(obj["error"])[:1000])
+                return obj.get("result", {})
+            # Completion can arrive before turn/start's reply. Do not buffer
+            # arbitrarily large output streams while waiting for that reply.
+            if obj.get("method") == "turn/completed":
+                self.notifications.append(obj)
+
+    def initialize(self):
+        self.request("initialize", {"clientInfo": {"name": "codex-any-bot", "version": __version__}})
+        self.send({"method": "initialized", "params": {}})
+
+    def close(self):
+        self.tree.close()
+        self.reader.join(timeout=2)
+
+
+def visible_thread(server, settings, emit):
+    """Fork legacy exec history through Codex, preserving its original record."""
+    options = {"cwd": settings.cwd or None, "approvalPolicy": "never",
+               "config": {"notify": [], "tui.notifications": False}}
+    creating = not settings.thread_id
+    if settings.thread_id:
+        existing = server.request("thread/read", {"threadId": settings.thread_id, "includeTurns": False})["thread"]
+        if existing.get("id") != settings.thread_id:
+            raise RpcError("thread not found: mismatched session")
+        creating = existing.get("source") == "exec"
+        method = "thread/fork" if creating else "thread/resume"
+        options["threadId"] = settings.thread_id
+    else:
+        method = "thread/start"
+        options["ephemeral"] = False
+    try:
+        result = server.request(method, options)
+        thread_id = result["thread"]["id"]
+        if not isinstance(thread_id, str) or not thread_id:
+            raise ValueError("missing thread ID")
+    except RpcError:
+        raise
+    except (RuntimeError, OSError, KeyError, TypeError, ValueError) as error:
+        if creating:
+            raise UnknownSession("unknown session after thread creation") from error
+        raise
+    # Persist the ID before naming or inference, including failed first turns.
+    emit({"event": "thread", "thread_id": thread_id})
+    if creating:
+        label = settings.thread_name or Path(settings.cwd).name or "会话"
+        try:
+            server.request("thread/name/set", {"threadId": thread_id, "name": f"AnyBot · {label}"[:80]})
+        except RpcError:
+            pass  # Naming may be unsupported; never lose the already saved ID.
+    return thread_id
+
+
+def run_turn(binary: str, settings, cancel: threading.Event, emit) -> dict:
+    server = AppServer(binary, settings.cwd or None, cancel)
+    thread_id = settings.thread_id
+    turn_id = None
+
+    def progress(event):
+        nonlocal thread_id
+        thread_id = event.get("thread_id") or thread_id
+        emit(event)
+
+    try:
+        server.initialize()
+        thread_id = visible_thread(server, settings, progress)
+        result = server.request("turn/start", {"threadId": thread_id,
+            "input": [{"type": "text", "text": settings.prompt, "text_elements": []}]})
+        turn_id = result["turn"]["id"]
+        while True:
+            obj = server.notifications.popleft() if server.notifications else server.receive()
+            params = obj.get("params", {})
+            if params.get("threadId") != thread_id:
                 continue
-            if not isinstance(event, dict):
-                continue
-            kind = event.get("type")
-            if kind == "thread.started":
-                thread_id = event.get("thread_id") or thread_id
-                emit({"event": "thread", "thread_id": thread_id})
-            elif kind == "turn.completed":
-                completed = True
-            elif kind in ("error", "turn.failed"):
-                # Reconnecting errors may precede a later completed turn.
-                failed = failed or kind == "turn.failed"
-                errors.append(json.dumps(event, ensure_ascii=False)[:1000])
-                errors = errors[-10:]
-            elif kind == "item.completed" and event.get("item", {}).get("type") == "agent_message":
+            if obj.get("method") == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
+                turn = params["turn"]
+                status = turn.get("status")
+                kind = "success" if status == "completed" else "cancelled" if status == "interrupted" else classify_error(json.dumps(turn.get("error")))
+                return {"kind": kind, "thread_id": thread_id}
+            if obj.get("method") == "item/completed" and params.get("item", {}).get("type") == "agentMessage":
                 emit({"event": "output"})
-        while tree.proc.poll() is None:
-            if cancel.wait(0.2):
-                return {"kind": "cancelled", "thread_id": thread_id}
-        if completed and not failed and tree.proc.returncode == 0 and thread_id:
-            return {"kind": "success", "thread_id": thread_id}
-        kind = classify_error("\n".join(errors))
-        if not thread_id and kind == "failed":
-            kind = "unknown_session"  # Never blindly create another thread after an ambiguous start.
-        return {"kind": kind, "thread_id": thread_id}
+    except TurnCancelled:
+        return {"kind": "cancelled", "thread_id": thread_id}
+    except UnknownSession:
+        return {"kind": "unknown_session", "thread_id": thread_id}
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
+        kind = classify_error(str(error))
+        return {"kind": "unknown_session" if not thread_id and kind == "failed" else kind, "thread_id": thread_id}
     finally:
-        tree.close()
-        reader.join(timeout=2)
+        if cancel.is_set() and turn_id:
+            try:
+                server.send({"id": "interrupt", "method": "turn/interrupt", "params": {"threadId": thread_id, "turnId": turn_id}})
+                until = time.monotonic() + 2
+                while time.monotonic() < until:
+                    try:
+                        obj = server.replies.get(timeout=0.2)
+                    except queue.Empty:
+                        continue
+                    if obj is None or (obj.get("method") == "turn/completed" and obj.get("params", {}).get("turn", {}).get("id") == turn_id):
+                        break
+            except OSError:
+                pass
+        server.close()
 
 
 def rpc(method: str, params: dict, binary: str | None = None) -> dict:
-    tree = ProcessTree([binary or find_codex(), "app-server"])
-    replies = queue.Queue()
-
-    def read():
-        for line in tree.proc.stdout:
-            try:
-                replies.put(json.loads(line))
-            except ValueError:
-                pass
-        replies.put({"error": {"message": "Codex app-server 已退出"}})
-
-    threading.Thread(target=read, daemon=True).start()
-
-    def send(data):
-        tree.proc.stdin.write((json.dumps(data) + "\n").encode())
-        tree.proc.stdin.flush()
-
-    def request(mid, name, values):
-        send({"id": mid, "method": name, "params": values})
-        until = time.monotonic() + 30
-        while time.monotonic() < until:
-            obj = replies.get(timeout=max(0.1, until - time.monotonic()))
-            if obj.get("id") == mid or ("error" in obj and "id" not in obj):
-                if "error" in obj:
-                    raise RuntimeError(str(obj["error"])[:300])
-                return obj.get("result", {})
-        raise TimeoutError("Codex 会话接口超时")
-
+    server = AppServer(binary)
     try:
-        request(1, "initialize", {"clientInfo": {"name": "codex-any-bot", "version": __version__}})
-        send({"method": "initialized", "params": {}})
-        return request(2, method, params)
+        server.initialize()
+        return server.request(method, params)
     finally:
-        tree.close()
+        server.close()
+
+
 
 
 def provider_auth_status(config_root: Path | None = None) -> dict:

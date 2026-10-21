@@ -72,7 +72,7 @@ export class BotHub extends DurableObject<Env> {
     }
     return data.result;
   }
-  async say(text: string, rows?: Rows, silent = false): Promise<any> {
+  async say(text: string, rows?: Rows, silent = true): Promise<any> {
     return this.telegram("sendMessage", { chat_id: this.env.CHAT_ID, text: text.slice(0, 4000), disable_notification: silent,
       ...(rows ? { reply_markup: { inline_keyboard: rows } } : {}) });
   }
@@ -203,7 +203,6 @@ export class BotHub extends DurableObject<Env> {
         const stopAt = this.list<Schedule>("schedule:").filter(s => s.device_id === device!.id && s.action === "stop" && s.due > now()).sort((a, b) => a.due - b.due)[0]?.due ?? null;
         ws.send(JSON.stringify({ type: "reconcile", protocol: 1, desired: device.desired, version: device.version, settings: device.settings, stop_at: stopAt }));
         for (const cmd of this.list<Command>("cmd:" + device.id + ":")) if (!cmd.result && cmd.expires_at >= now()) ws.send(JSON.stringify(cmd));
-        if (reboot) await this.say(`${device.name} 已重新启动，当前待命。`);
       } else if (data.event === "status") {
         device.state = data;
         if (data.version === device.version && data.settings) device.settings = settings({ ...data.settings,
@@ -316,7 +315,7 @@ export class BotHub extends DurableObject<Env> {
       if (!this.online(device) && !device.offline_notified) {
         device.offline_notified = true;
         this.put("d:" + device.id, device);
-        this.ctx.waitUntil(this.notify(`${device.name} 已离线。客户端若仍在运行，将自行按保持期限停止。`));
+        // Connectivity is visible on the existing panel; never send idle/offline alerts.
         this.ctx.waitUntil(this.card(device.id, false).catch(() => undefined));
       }
     }
@@ -403,7 +402,10 @@ export class BotHub extends DurableObject<Env> {
       if (messageId) {
         try {
           await this.telegram("editMessageText", { chat_id: this.env.CHAT_ID, message_id: messageId, text, reply_markup: { inline_keyboard: rows } });
-        } catch { messageId = undefined; }
+        } catch {
+          if (background) return; // Passive refreshes must not replace a deleted panel with a new message.
+          messageId = undefined;
+        }
       }
       if (!messageId) messageId = (await this.say(text, rows, true)).message_id;
       this.put("panel", { message_id: messageId, view, device_id: deviceId, signature });
