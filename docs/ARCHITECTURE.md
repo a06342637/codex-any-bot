@@ -16,9 +16,9 @@ Telegram 只配置一个 Webhook。Worker 验证 Webhook 密钥，随后校验�
 
 ## 会话与时钟
 
-通过 `codex app-server` 的初始化握手及 `thread/list` 读取本机会话；不直接修改 Codex 数据文件。执行采用 `codex exec [resume] --json --skip-git-repo-check`，提示词从 stdin 输入，工作目录通过进程参数指定，不经过 shell 插值。
+通过 `codex app-server` 的初始化握手及 `thread/list` 读取本机会话；不直接修改 Codex 数据文件。执行采用 `thread/start` 或 `thread/resume` 加 `turn/start`，提示词通过 JSON-RPC 输入，不经过 shell 插值。新会话持久保存并设置 AnyBot 名称。旧版 `exec` 会话由 `thread/fork` 保留历史生成可见副本，原会话不删除；取得 ID 后立即保存，后续轮次复用。会话列表明确包含 `exec` 和交互来源，并查询所有模型服务。每个子进程单独覆盖 `notify=[]` 和 `tui.notifications=false`，不修改用户配置。
 
-仅 `turn.completed` 加正常退出算成功；首次成功设置 `first_success_at`。保持截止时间是 `first_success_at + hold_minutes × 60`，再与指定停止时间取最早值。后续轮次、失败和重连不会续期。发送间隔只从成功的轮次结束计算。可重试的失败或会话占用在上一轮结束后立即重试；认证、权限、归档和无法确定新会话等情况仍暂停。
+仅匹配当前会话和轮次的 `turn/completed` 且状态为 `completed` 算成功（app-server 在轮次结束后仍运行）；首次成功设置 `first_success_at`。保持截止时间是 `first_success_at + hold_minutes × 60`，再与指定停止时间取最早值。后续轮次、失败和重连不会续期。发送间隔只从成功的轮次结束计算。可重试的失败或会话占用在上一轮结束后立即重试；认证、权限、归档和无法确定新会话等情况仍暂停。
 
 同机仅一个执行进程树。停止或到期设置取消信号，Windows Job Object / macOS 进程组清理所属子进程。客户端每约 0.2 秒检查取消和截止时间，模型响应没有固定时长保证。系统时钟应保持准确；电脑睡眠期间无法运行检查，醒来后先检查截止时间。
 
@@ -35,3 +35,5 @@ Windows 包同时提供交互命令行入口和无窗口后台入口。安装/�
 会话元数据包含 thread_id 和 thread_name。任务保留自己的会话快照，面板另外显示当前选择，迟到的旧任务事件不能覆盖新选择。删除会话使用 Codex thread/delete；确认令牌单次有效，删除期间禁止启动和切换，只有匹配的成功回执才清理选择。
 
 目录浏览通过 directories 指令在目标客户端读取单层文件夹，每页 8 项，不读取文件内容。浏览请求和选择按钮绑定当前机器与浏览标识；切页或切换机器后旧结果不再更新面板。Telegram 回调只保存短令牌，完整路径保存在带过期时间的云端记录中。普通目录选择只保存 cwd，新建模式明确选择后才发送 start。
+
+离线和重启待命不主动发送消息，只刷新已有面板；后台刷新失败不新发替代面板。其他 TG 回复默认静默，执行状态卡仍按尝试记录。停止优先发送 `turn/interrupt`，随后清理本任务进程树。

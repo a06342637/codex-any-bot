@@ -201,6 +201,7 @@ class Agent:
                                 current_cwd, payload.get("path"), payload.get("offset", 0), payload.get("location"))}
                         elif action == "sessions":
                             result = rpc("thread/list", {"limit": 8, "sortKey": "updated_at", "archived": False,
+                                                         "modelProviders": [], "sourceKinds": ["cli", "vscode", "appServer", "exec"],
                                                          **({"cursor": payload["cursor"]} if payload.get("cursor") else {})})
                             data = [{k: t.get(k) for k in ("id", "name", "preview", "cwd", "updatedAt")} for t in result.get("data", [])]
                             for item in data:

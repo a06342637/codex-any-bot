@@ -29,6 +29,56 @@ async function webhook(update: any, token = "test-secret") {
 }
 
 describe("real SQLite-backed Durable Object", () => {
+  it("keeps repeated offline transitions quiet and still updates the control panel", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.card("machine1");
+      calls.length = 0;
+      for (let i = 0; i < 3; i++) {
+        const d = instance.device("machine1");
+        d.offline_notified = false;
+        d.seen = 0;
+        instance.put("d:machine1", d);
+        await instance.alarm();
+        expect(instance.device("machine1").offline_notified).toBe(true);
+      }
+      expect(instance.get<any>("panel").signature).toContain("⚫ machine1");
+    });
+    expect(calls.filter(c => c.url.endsWith("/sendMessage"))).toHaveLength(0);
+  });
+  it("does not recreate deleted panels during passive refreshes", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.card("machine1");
+      calls.length = 0;
+      const d = instance.device("machine1"); d.name = "Changed"; instance.put("d:machine1", d);
+      instance.telegram = async () => { throw new Error("panel deleted"); };
+      await expect(instance.card("machine1", false)).resolves.toBeUndefined();
+    });
+    expect(calls).toHaveLength(0);
+  });
+  it("sends controls and actionable notices silently", async () => {
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      await instance.say("Control reply");
+      await instance.notify("Scheduled command failed");
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls.every(c => c.body.disable_notification === true)).toBe(true);
+  });
+  it("does not announce a client reboot while retaining stopped reconciliation", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1");
+      d.boot_id = "previous"; d.connection = "connection"; d.desired = "running";
+      instance.put("d:machine1", d);
+      const sent: any[] = [];
+      const ws = { deserializeAttachment: () => ({ device_id: d.id, connection: d.connection }), send: (s: string) => sent.push(JSON.parse(s)) } as unknown as WebSocket;
+      await instance.webSocketMessage(ws, JSON.stringify({ protocol: 1, event: "hello", boot_id: "new" }));
+      expect(sent[0].desired).toBe("stopped");
+      expect(instance.device(d.id).boot_id).toBe("new");
+    });
+    expect(calls.filter(c => c.url.endsWith("/sendMessage"))).toHaveLength(0);
+  });
   it("enrolls multiple computers with owner token and ID without persisting the bot token", async () => {
     const enroll = () => SELF.fetch("https://relay.example.com/v1/enroll", { method: "POST", body: JSON.stringify({ platform: "win32", name: "Windows", cwd: "C:\\work", bot_token: "test-token", user_id: "42" }) });
     const a: any = await (await enroll()).json();
