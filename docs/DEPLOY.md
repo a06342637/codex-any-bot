@@ -2,7 +2,7 @@
 
 [返回首页](../README.md) · [Windows 接入](WINDOWS.md) · [Mac 接入](MACOS.md) · [TG 操作](TELEGRAM.md)
 
-适用于当前 **v0.2.7 的 CF 部署方式**。先完成本页，再在各台电脑安装客户端。首次部署选一台 Windows 或 Mac 操作即可，不必每台都部署。
+适用于当前 **v0.2.8 的 CF 部署方式**。先完成本页，再在各台电脑安装客户端。首次部署选一台 Windows 或 Mac 操作即可，不必每台都部署。
 
 ## 1. CF 负责什么
 
@@ -197,6 +197,8 @@ https://codex-any-bot.你的子域名.workers.dev/healthz
 
 ### 云端：在部署电脑执行一次
 
+**v0.2.8 的“暂停后不自动发消息”修复在 CF 云端，必须执行下面的云端部署步骤。** 仅点击 TG“更新程序”不会更新此逻辑。新版云端兼容已有 v0.2.7 客户端，无需重新绑定设备。
+
 TG 的更新按钮不会更新 CF。从 v0.1.x 升级到 v0.2.0 时，必须先更新云端，以启用 Token + ID 绑定和自动移除设备接口，再在 TG 更新客户端。已有设备凭据继续有效，客户端更新不重新询问信息。
 
 将下面的 YOUR-SUBDOMAIN 换成真实子域名；自定义域名则填写实际根地址。项目有未提交修改时先处理，不要强制覆盖。
@@ -223,7 +225,7 @@ npx wrangler deploy --var "PUBLIC_BASE_URL:https://codex-any-bot.YOUR-SUBDOMAIN.
 
 CF 登录过期时，在同一目录先执行 npx.cmd wrangler login（Windows）或 npx wrangler login（Mac），再部署。
 
-**每次都要传入真实 PUBLIC_BASE_URL。** 仓库配置使用占位地址，不带参数可能把云端地址改回占位值。正常代码部署保留 Secrets，无需重输 Bot Token。新设备安装命令使用 RELEASE_TAG 指定的已发布版本，当前为 v0.2.7。
+**每次都要传入真实 PUBLIC_BASE_URL。** 仓库配置使用占位地址，不带参数可能把云端地址改回占位值。正常代码部署保留 Secrets，无需重输 Bot Token。新设备安装命令使用 RELEASE_TAG 指定的已发布版本，当前为 v0.2.8。
 
 云端部署可能让客户端短暂重连，客户端会核对最新状态。维护前建议先在 TG 停止需要维护的任务。
 

@@ -61,6 +61,9 @@ export class BotHub extends DurableObject<Env> {
     return this.ctx.getWebSockets(device.id).find(ws => ws.deserializeAttachment()?.connection === device.connection && ws.readyState === WebSocket.OPEN);
   }
   online(device: Device) { return now() - device.seen < 90 && !!this.socket(device); }
+  automaticMessagesAllowed(device: Device) {
+    return device.desired === "running" && !["stopping", "stopped", "paused"].includes(runtimeStatus(device).phase);
+  }
   async telegram(method: string, body: any): Promise<any> {
     const response = await fetch(`https://api.telegram.org/bot${this.env.BOT_TOKEN}/${method}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000),
@@ -209,6 +212,7 @@ export class BotHub extends DurableObject<Env> {
           thread_name: data.settings.thread_name ?? (data.settings.thread_id === device.settings.thread_id ? device.settings.thread_name : null) });
         if (data.version === device.version && (!data.task || ["stopped", "paused"].includes(data.task.phase))) device.desired = "stopped";
         this.put("d:" + device.id, device);
+        if (!this.automaticMessagesAllowed(device)) return;
         if (data.notice && !data.task) {
           const key = `${data.task?.id}:${data.notice}`;
           if (key !== device.notice_key) {
@@ -251,7 +255,9 @@ export class BotHub extends DurableObject<Env> {
           }
         }
         if (!data.ok) {
+          const quietRunCommand = ["start", "stop"].includes(cmd.action) && !this.automaticMessagesAllowed(device);
           if (cmd.action === "start" && cmd.version === device.version) { device.desired = "stopped"; this.put("d:" + device.id, device); }
+          if (quietRunCommand) return;
           await this.say(`${device.name}：${String(data.message || "操作失败").slice(0, 300)}`);
         } else if (data.sessions) await this.sessionList(device, data.sessions, data.cursor);
         else if (data.diagnostics) await this.say(`${device.name} 诊断\nCodex：${data.diagnostics.version}\n登录：${data.diagnostics.auth_detail || (data.diagnostics.logged_in ? "正常" : "需要登录")}\n路径：${data.diagnostics.codex}\n平台：${data.diagnostics.platform}`, undefined, true);
@@ -289,12 +295,13 @@ export class BotHub extends DurableObject<Env> {
         delete device.session_delete;
         this.put("d:" + device.id, device);
       }
+      const notifyStartFailure = this.automaticMessagesAllowed(device);
       if (command.action === "start" && command.version === device.version) {
         device.desired = "stopped";
         this.put("d:" + device.id, device);
         this.socket(device)?.send(JSON.stringify({ type: "reconcile", protocol: 1, desired: "stopped", version: device.version, settings: device.settings }));
       }
-      if (!["stop", "settings", "deadline", "revoke"].includes(command.action)) this.ctx.waitUntil(this.notify(`${device.name}：${command.result.message}`));
+      if (!["stop", "settings", "deadline", "revoke"].includes(command.action) && (command.action !== "start" || notifyStartFailure)) this.ctx.waitUntil(this.notify(`${device.name}：${command.result.message}`));
     }
     for (const schedule of this.list<Schedule>("schedule:")) {
       if (schedule.due > now()) continue;
@@ -356,13 +363,14 @@ export class BotHub extends DurableObject<Env> {
     this.put("cmd:" + deviceId + ":" + command.id, command, now() + 7 * 86400);
     this.socket(device)?.send(JSON.stringify(command));
     await this.arm();
-    if (action === "start" || action === "stop") this.ctx.waitUntil(this.runCard(deviceId).catch(() => undefined));
+    if (action === "start") this.ctx.waitUntil(this.runCard(deviceId).catch(() => undefined));
     return command;
   }
   async runCard(deviceId: string, force = false, anchor?: number) {
     const work = (this.runQueues.get(deviceId) ?? Promise.resolve()).catch(() => undefined).then(async () => {
       const device = this.get<Device>("d:" + deviceId);
       if (!device || (!force && !device.state?.task && !device.run_command_id)) return;
+      if (!force && !this.automaticMessagesAllowed(device)) return;
       const status = runtimeStatus(device);
       const previous = this.get<RunCard>("run:" + deviceId);
       const nextAttempt = previous && status.attempt > previous.attempt && previous.attempt > 0;
@@ -380,9 +388,17 @@ export class BotHub extends DurableObject<Env> {
       if (messageId === previous?.message_id && previous?.signature === signature && (panel?.message_id !== messageId || panel?.view === "run")) return;
       if (messageId) {
         try { await this.telegram("editMessageText", { chat_id: this.env.CHAT_ID, message_id: messageId, text, reply_markup: { inline_keyboard: rows } }); }
-        catch { messageId = undefined; }
+        catch {
+          const current = this.get<Device>("d:" + deviceId);
+          if (!current || !this.automaticMessagesAllowed(current)) return;
+          messageId = undefined;
+        }
       }
-      if (!messageId) messageId = (await this.say(text, rows, true)).message_id;
+      if (!messageId) {
+        const current = this.get<Device>("d:" + deviceId);
+        if (!current || (!force && !this.automaticMessagesAllowed(current))) return;
+        messageId = (await this.say(text, rows, true)).message_id;
+      }
       this.put("run:" + deviceId, { message_id: messageId, task_id: status.runId, attempt: status.attempt, signature });
       if (panel?.message_id === messageId) this.put("panel", { message_id: messageId, view: "run", device_id: deviceId, signature });
     });
@@ -396,6 +412,10 @@ export class BotHub extends DurableObject<Env> {
       const previous = fresh ? undefined : this.get<Panel>("panel");
       // A status from another machine must never replace the panel being used.
       if (background && (previous?.view !== "device" || previous.device_id !== deviceId)) return;
+      if (background && deviceId) {
+        const device = this.get<Device>("d:" + deviceId);
+        if (!device || !this.automaticMessagesAllowed(device)) return;
+      }
       const signature = JSON.stringify([text, rows]);
       if ((!anchor || previous?.message_id === anchor) && previous?.signature === signature && previous.view === view && previous.device_id === deviceId) return;
       let messageId = anchor ?? previous?.message_id;
@@ -617,10 +637,12 @@ export class BotHub extends DurableObject<Env> {
       if (action === "runstop") await this.issue(deviceId, "stop", {});
       else if (status.phase === "stopping") throw new Error("正在停止上一轮，请稍后再点继续");
       else if (device.desired !== "running") await this.issue(deviceId, "start", {});
+      if (action === "runstop" && messageId === undefined) return;
       return this.runCard(deviceId, true, messageId);
     }
     if (action === "start" || action === "stop") {
       await this.issue(deviceId, action, {});
+      if (action === "stop" && messageId === undefined) return;
       await this.runCard(deviceId);
       return this.card(deviceId, true, messageId);
     }
