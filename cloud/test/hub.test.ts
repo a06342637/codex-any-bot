@@ -29,6 +29,145 @@ async function webhook(update: any, token = "test-secret") {
 }
 
 describe("real SQLite-backed Durable Object", () => {
+  it.each(["stopping", "stopped", "paused"])("keeps %s heartbeats quiet with and without a previous run card", async phase => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1"); d.desired = "running"; d.connection = "connection";
+      d.settings.thread_id = "selected-session";
+      d.run_command_id = "job";
+      d.state = { version: 0, time: 1000, task: { id: "job", phase: "running", attempts: 1 } };
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      await instance.card(d.id);
+      calls.length = 0;
+      const ws = { deserializeAttachment: () => ({ device_id: d.id, connection: d.connection }) } as unknown as WebSocket;
+      for (const removeCard of [false, true]) {
+        if (removeCard) instance.del("run:" + d.id);
+        for (let i = 0; i < 3; i++) {
+          await instance.webSocketMessage(ws, JSON.stringify({ protocol: 1, event: "status", version: 0,
+            time: 1030 + i * 30, notice: "任务已暂停", settings: { ...d.settings, thread_name: "Late title" },
+            task: { id: "job", phase, attempts: 2 } }));
+          await instance.runCard(d.id);
+          await instance.card(d.id, false);
+          await instance.alarm();
+        }
+      }
+      expect(instance.device(d.id).state.task.phase).toBe(phase);
+      expect(instance.device(d.id).settings.thread_name).toBe("Late title");
+    });
+    expect(calls).toHaveLength(0);
+  });
+  it("keeps idle notices and reconnect status quiet while retaining local state", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1"); d.connection = "connection";
+      instance.put("d:machine1", d);
+      const sent: any[] = [];
+      const ws = { deserializeAttachment: () => ({ device_id: d.id, connection: d.connection }),
+        send: (s: string) => sent.push(JSON.parse(s)) } as unknown as WebSocket;
+      for (let i = 0; i < 3; i++) {
+        await instance.webSocketMessage(ws, JSON.stringify({ protocol: 1, event: "hello", boot_id: "boot" }));
+        await instance.webSocketMessage(ws, JSON.stringify({ protocol: 1, event: "status", version: 0,
+          time: 1000 + i * 30, task: null, notice: "客户端已停止" }));
+      }
+      expect(sent.every(s => s.desired === "stopped")).toBe(true);
+      expect(instance.device(d.id).state.time).toBe(1060);
+    });
+    expect(calls).toHaveLength(0);
+  });
+  it("suppresses queued run cards, late progress and command failures after a stop", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1"); d.connection = "connection"; d.desired = "running"; d.version = 1;
+      d.run_command_id = "job";
+      d.state = { version: 1, task: { id: "job", phase: "running", attempts: 1 } };
+      instance.put("d:machine1", d);
+      instance.put("cmd:machine1:job", { id: "job", device_id: d.id, version: 1, action: "start", payload: {}, expires_at: now() - 1 });
+      const queued = instance.runCard(d.id);
+      const stop = await instance.issue(d.id, "stop", {});
+      await queued;
+      const ws = { deserializeAttachment: () => ({ device_id: d.id, connection: d.connection }) } as unknown as WebSocket;
+      for (const version of [1, stop.version]) {
+        await instance.webSocketMessage(ws, JSON.stringify({ protocol: 1, event: "status", version,
+          time: 1030, task: { id: "job", phase: "running", attempts: 2 } }));
+      }
+      await instance.alarm();
+      await instance.webSocketMessage(ws, JSON.stringify({ protocol: 1, event: "ack", command_id: stop.id,
+        ok: false, message: "指令已被较新的操作替代" }));
+      expect(instance.device(d.id).desired).toBe("stopped");
+      expect(instance.get<any>("cmd:machine1:job").result.ok).toBe(true);
+      expect(instance.get<any>("cmd:machine1:" + stop.id).result.ok).toBe(false);
+    });
+    expect(calls).toHaveLength(0);
+  });
+  it("does not notify expired or rejected starts that were superseded by a stop", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1"); d.connection = "connection"; d.version = 2;
+      instance.put("d:machine1", d);
+      for (const id of ["expired", "rejected"]) instance.put("cmd:machine1:" + id,
+        { id, device_id: d.id, version: 1, action: "start", payload: {}, expires_at: now() - (id === "expired" ? 1 : -30) });
+      await instance.alarm();
+      const ws = { deserializeAttachment: () => ({ device_id: d.id, connection: d.connection }) } as unknown as WebSocket;
+      await instance.webSocketMessage(ws, JSON.stringify({ protocol: 1, event: "ack", command_id: "rejected",
+        ok: false, message: "指令已被较新的操作替代" }));
+      expect(instance.get<any>("cmd:machine1:expired").result.ok).toBe(false);
+      expect(instance.get<any>("cmd:machine1:rejected").result.ok).toBe(false);
+    });
+    expect(calls).toHaveLength(0);
+  });
+  it("does not send a replacement when a pending edit fails after stopping", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1"); d.desired = "running";
+      d.state = { version: 0, time: 1000, task: { id: "job", phase: "running", attempts: 1 } };
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      calls.length = 0;
+      d.state.time = 1005; instance.put("d:machine1", d);
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const editing = new Promise<void>(resolve => { entered = resolve; });
+      const telegram = instance.telegram.bind(instance);
+      instance.telegram = async (method, body) => {
+        if (method === "editMessageText") { entered(); await gate; throw new Error("card deleted"); }
+        return telegram(method, body);
+      };
+      const refresh = instance.runCard(d.id);
+      await editing;
+      await instance.issue(d.id, "stop", {});
+      release();
+      await refresh;
+    });
+    expect(calls).toHaveLength(0);
+  });
+  it("updates the clicked stop message once and keeps later heartbeats quiet", async () => {
+    await seed();
+    await runInDurableObject(hub(), async (instance: BotHub) => {
+      const d = instance.device("machine1"); d.desired = "running"; d.connection = "connection";
+      d.state = { version: 0, time: 1000, task: { id: "job", phase: "running", attempts: 1 } };
+      instance.put("d:machine1", d);
+      await instance.runCard(d.id);
+      const messageId = instance.get<any>("run:machine1").message_id;
+      calls.length = 0;
+      await instance.click("runstop:machine1:job", messageId);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url.endsWith("/editMessageText")).toBe(true);
+      expect(calls[0].body.message_id).toBe(messageId);
+      expect(calls[0].body.text).toContain("停止指令已发送");
+      calls.length = 0;
+      const ws = { deserializeAttachment: () => ({ device_id: d.id, connection: d.connection }) } as unknown as WebSocket;
+      await instance.webSocketMessage(ws, JSON.stringify({ protocol: 1, event: "status", version: 1,
+        time: 1030, task: { id: "job", phase: "stopped", attempts: 2 } }));
+      await instance.click("status:machine1", messageId);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].body.text).toContain("已停止");
+      calls.length = 0;
+      await instance.runCard(d.id);
+    });
+    expect(calls).toHaveLength(0);
+  });
   it("keeps repeated offline transitions quiet and still updates the control panel", async () => {
     await seed();
     await runInDurableObject(hub(), async (instance: BotHub) => {
@@ -553,7 +692,7 @@ describe("real SQLite-backed Durable Object", () => {
       const [text] = JSON.parse(panel.signature);
       panel.signature = JSON.stringify([text, []]);
       instance.put("panel", panel);
-      await instance.card("machine1", false);
+      await instance.card("machine1");
     });
     expect(calls.filter(c => c.url.endsWith("/editMessageText"))).toHaveLength(1);
     expect(calls.at(-1).body.reply_markup.inline_keyboard.flat().some((b: any) => b.text === "更新程序")).toBe(true);

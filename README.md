@@ -2,7 +2,7 @@
 
 **一个 Telegram Bot 控制多台 Windows / Mac。电脑运行安装命令，输入 Bot Token 和你的数字 ID，即可后台上线；以后在 TG 改名、选会话、设置保持时间、一键停止或更新。**
 
-当前客户端版本 **v0.2.7**，使用 Cloudflare（CF）分发服务，支持 Windows x64 / ARM64、Mac Intel / Apple Silicon。
+当前客户端版本 **v0.2.8**，使用 Cloudflare（CF）分发服务，支持 Windows x64 / ARM64、Mac Intel / Apple Silicon。
 
 ## 第一次使用
 
@@ -27,13 +27,13 @@ CF 服务只部署一次。Bot Token 和用户 ID 先配置到自己的 CF 服�
 ### Windows：在 CMD 运行
 
 ~~~bat
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.7/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP ('anybot-'+[guid]::NewGuid()+'.ps1'); try { Invoke-WebRequest 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.8/install.ps1' -OutFile $p; & $p } finally { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }"
 ~~~
 
 ### Mac：在终端运行
 
 ~~~bash
-(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.7/install.sh' -o "$p" && bash "$p")
+(p=$(mktemp -t anybot-bootstrap); trap 'rm -f "$p"' EXIT; curl -fLsS 'https://github.com/a06342637/codex-any-bot/releases/download/v0.2.8/install.sh' -o "$p" && bash "$p")
 ~~~
 
 运行后依次填写：
@@ -78,6 +78,8 @@ Uninstall: 本机完整卸载命令
 新版新建会话显示为 **AnyBot · 目录名**。打开对应电脑的 Codex，在最近会话中查看；暂停脚本或关闭客户端后，历史仍然保存。若该目录未加入 Codex 项目，可先在最近会话中查找，再加入对应项目。
 
 旧版会话是 `exec` 来源，Codex 默认列表会过滤它。新版继续该会话时会保留旧历史，生成可见副本并显示新的实际会话 ID；原会话不删除。TG 的会话列表仍能选到旧记录。电脑断线、重连或重启待命不再反复发提醒，其他 TG 消息默认静默。
+
+**v0.2.8：暂停、停止和待命期间不再自动发送 TG 消息，也不再后台更新状态卡。** 状态仍保存，点击“刷新状态”或“运行状态”可以查看。此修复必须[部署新版 CF 云端](docs/DEPLOY.md#9-更新电脑端与云端分别处理)，仅更新电脑客户端不会生效；已有 v0.2.7 客户端可以继续使用。
 
 ## 日志、卸载和更新
 
